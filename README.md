@@ -26,7 +26,7 @@ Players find it in the server browser if `VEIN_SERVER_PUBLIC=true`, or join from
 
 ## What this file knows that a fresh one does not
 
-**Join by IP address, not by name.** On the machine this template comes from, `connect <hostname>:<port>` joined once and then failed with no error at all. Packet captures on both ends of the path showed the client sending nothing when it was given a name, while DNS answered correctly; `connect <IP>:<port>` worked every time, from the internet and from the LAN. VEIN's networking runs over Steam's socket layer, which most likely takes addresses as numbers only. Give players the number.
+**Join by IP address, not by name.** On the machine this template comes from, `connect <hostname>:<port>` joined once and then failed with no error at all. Packet captures on both ends of the path showed the client sending nothing when it was given a name, while DNS answered correctly; `connect <IP>:<port>` worked every time, from the internet and from the LAN. The same name works for everything else: a monitor's A2S query to the query port answers through it, and the in-game server search lists the server by its IP. Only joining fails. VEIN's networking runs over Steam's socket layer, which most likely takes addresses as numbers only. Give players the number, or the search.
 
 **The ports are published under the numbers the server binds.** The server is told both ports and advertises them to Steam itself. Map 8888 on the host to 7777 in the container, as a quick edit often does, and Steam lists a port nobody can reach. `VEIN_SERVER_PORT` and `VEIN_SERVER_QUERY_PORT` move both sides at once.
 
