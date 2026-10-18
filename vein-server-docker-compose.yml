@@ -1,0 +1,120 @@
+# Image pin lives HERE, as an interpolation default, so `git pull` (or
+# re-downloading this file) delivers the exact image this repository has
+# tested. Set VEIN_SERVER_IMAGE_VERSION in .env to run a different version
+# while the digest for it is fetched normally, or VEIN_SERVER_IMAGE_TAG to
+# replace the whole reference. CI (the Trivy scan and check-pin-freshness)
+# reads the pin from this line: this block is the single source of truth.
+#
+# THE IMAGE IS THE WRAPPER, NOT THE GAME. mbround18/vein-docker brings
+# SteamCMD and a start script; the game itself, Steam app 2131400, is
+# downloaded into the volume below on the first start and brought up to date
+# on every start after it. A new image tag is a change to the scripts, not a
+# VEIN patch. VEIN patches arrive through scripts/refresh.sh.
+x-images:
+  vein-server: &vein-server-image ${VEIN_SERVER_IMAGE_TAG:-mbround18/vein-docker:${VEIN_SERVER_IMAGE_VERSION:-v0.0.4@sha256:a571282f29a237ab7185a5521315ef48111353220428701fed1e2a6093a5c116}}
+
+services:
+  vein-server:
+    image: *vein-server-image
+    # Handles untrusted input from the internet and cannot gain privileges
+    # through a setuid binary. Here that also matters for a second reason: the
+    # image gives its steam user passwordless sudo, and with no-new-privileges
+    # sudo cannot raise anything. The start script's own sudo calls then do
+    # nothing, which costs nothing, because the volume below already belongs
+    # to the steam user.
+    security_opt:
+      - no-new-privileges:true
+    # AN UNREAL ENGINE 5 SERVER, SIZED BY THE SLOT COUNT. On the machine this
+    # template comes from it idled at 3.3 GB with one player on, and ran 16
+    # slots under an 8 GB ceiling, then 32 under 16 GB. Raise the two
+    # together. The ceiling exists so a leak here cannot get some other
+    # container killed instead, and there is no swap on top of it, because a
+    # game tick that pages is a stutter every player sees.
+    deploy:
+      resources:
+        limits:
+          memory: ${VEIN_SERVER_MEMORY_LIMIT:-8g}
+          cpus: "${VEIN_SERVER_CPU_LIMIT:-4.0}"
+        reservations:
+          memory: ${VEIN_SERVER_MEMORY_RESERVATION:-4g}
+          cpus: "${VEIN_SERVER_CPU_RESERVATION:-1.0}"
+    memswap_limit: ${VEIN_SERVER_MEMORY_LIMIT:-8g}
+    ports:
+      # PUBLISHED UNDER THE NUMBERS THEY BIND, NEVER TRANSLATED. The server is
+      # told both ports below and advertises them to Steam itself; map 8888 on
+      # the host to 7777 in the container and Steam lists a port nobody can
+      # reach. Change a port by changing the variable, which moves both sides.
+      - "${VEIN_SERVER_PORT:-7777}:${VEIN_SERVER_PORT:-7777}/udp"
+      # The query port: the server browser, and how scripts/refresh.sh asks
+      # how many players are on.
+      - "${VEIN_SERVER_QUERY_PORT:-27015}:${VEIN_SERVER_QUERY_PORT:-27015}/udp"
+    environment:
+      SERVER_NAME: ${VEIN_SERVER_NAME:-VEIN Server}
+      # Empty means anyone who finds the server can join.
+      SERVER_PASSWORD: ${VEIN_SERVER_PASSWORD:-}
+      ADMIN_PASSWORD: ${VEIN_SERVER_ADMIN_PASSWORD:?set in .env - see .env.example for generation command}
+      ADMIN_STEAM_IDS: ${VEIN_SERVER_ADMIN_STEAM_IDS:-}
+      SUPERADMIN_STEAM_IDS: ${VEIN_SERVER_SUPERADMIN_STEAM_IDS:-}
+      MAX_PLAYERS: ${VEIN_SERVER_MAX_PLAYERS:-16}
+      SERVER_PORT: ${VEIN_SERVER_PORT:-7777}
+      QUERY_PORT: ${VEIN_SERVER_QUERY_PORT:-27015}
+      SERVER_PUBLIC: ${VEIN_SERVER_PUBLIC:-false}
+      # SteamCMD brings the game up to date on every start, so a restart is
+      # an update. scripts/refresh.sh relies on exactly that, and only
+      # restarts an empty server whose build is behind Steam's.
+      UPDATE_ON_START: "true"
+      # The world is written on the way out, inside stop_grace_period below.
+      SAVE_ON_SHUTDOWN: "true"
+      # VEIN saves on its own every 60 seconds and keeps ten rotating files.
+      # That autosave is what makes a backup of a running server safe: VEIN
+      # has no rcon to ask for a save first. See scripts/backup.sh.
+      AUTOSAVE_ENABLED: "1"
+      AUTOSAVE_INTERVAL: "60"
+      AUTOSAVE_MAX_QUANTITY: "10"
+      # Optional: a Steam game server login token claims the server for your
+      # account. Steam app 1857950, per the image's documentation.
+      STEAM_GSLT: ${VEIN_SERVER_STEAM_GSLT:-}
+      TZ: ${VEIN_SERVER_TIMEZONE:-UTC}
+    volumes:
+      # The whole install: about 10 GB of game files SteamCMD manages and can
+      # download again, and under Vein/Saved the one thing it cannot, the world
+      # and its settings. scripts/backup.sh archives only Vein/Saved, and
+      # scripts/restore.sh puts it back at exactly that path.
+      - vein-server-data:/home/steam/vein
+    healthcheck:
+      # THE GAME, NOT THE WRAPPER. A check that passes while SteamCMD is still
+      # downloading is believed and wrong. /proc rather than pgrep; a comm
+      # file holds fifteen characters, hence the short name and the anchor at
+      # the start of the line. tests/e2e-healthcheck.sh runs it against a real
+      # container, in both directions.
+      test: ["CMD-SHELL", "grep -qs '^VeinServer' /proc/[0-9]*/comm"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # The first start downloads the whole game; later ones update it.
+      start_period: ${VEIN_SERVER_START_PERIOD:-60m}
+    # Long enough for the save the image performs before it stops. A SIGKILL
+    # in the middle of it is a world that loads from the last autosave, or
+    # does not load.
+    stop_grace_period: ${VEIN_SERVER_STOP_GRACE_PERIOD:-2m}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${VEIN_SERVER_LOG_MAX_SIZE:-10m}
+        max-file: "${VEIN_SERVER_LOG_MAX_FILE:-3}"
+
+# DECLARED EXTERNAL SO `docker compose down -v` CANNOT DELETE IT.
+#
+# `down -v` is the command everybody reaches for when a stack misbehaves. On a
+# project-managed volume it removes the world without asking, and the game
+# files with it. As an external volume compose mounts it and refuses to create
+# or destroy it. Create it before the first start:
+#
+#   docker volume create vein-server-data
+#
+# Removing it is then a deliberate act that names the thing being destroyed.
+volumes:
+  vein-server-data:
+    name: vein-server-data
+    external: true
