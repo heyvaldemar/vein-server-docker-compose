@@ -21,9 +21,11 @@
 # AND the archive is shown to contain save files: tar's exit code says it ran,
 # not that it kept a world.
 #
-# NO WORLD YET IS NOT A FAILURE. A server nobody has joined writes no save at
-# all, so this says so and exits 0. Once people have played, that same line is
-# the alarm: the world is not where this looks.
+# NO WORLD YET IS NOT A FAILURE; NO WORLD ANY MORE IS. A server nobody has
+# joined writes no save at all, so this says so and exits 0. Once this script
+# has archived a world, the same absence means the world is gone or is no
+# longer where this looks, and it fails. Read as "nothing yet", that night's
+# backup and every one after would have exited 0 over a lost world.
 #
 # Usage: scripts/backup.sh
 #   VEIN_BACKUP_DIR   where archives go       (default ./backups)
@@ -51,7 +53,12 @@ if [ "$rc" -gt 1 ]; then
   exit 1
 fi
 if [ "$rc" = 1 ]; then
-  echo "$(date '+%F %T') no world in $VOLUME yet (Vein/Saved/SaveGames does not exist): nothing to back up. VEIN writes none until somebody has played; after that, this line means the world is not where this script looks."
+  last="$(find "$BACKUP_DIR" -maxdepth 1 -name 'vein-world-*.tar.gz' 2>/dev/null | sort | tail -1)"
+  if [ -n "$last" ]; then
+    echo "$(date '+%F %T') FAILED: no world in $VOLUME (Vein/Saved/SaveGames does not exist), and $(basename "$last") holds one: the world this server had is gone, or is no longer where this script looks" >&2
+    exit 1
+  fi
+  echo "$(date '+%F %T') no world in $VOLUME yet (Vein/Saved/SaveGames does not exist): nothing to back up. VEIN writes none until somebody has played."
   exit 0
 fi
 

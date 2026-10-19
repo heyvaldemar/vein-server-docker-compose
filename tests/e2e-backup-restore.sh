@@ -128,6 +128,17 @@ else
   fail "a refusal changed the world"
 fi
 
+# 6. A world backed up before and gone now is not "no world yet". The archives
+# above say this server had one; with SaveGames removed, the backup must fail
+# and say so, not exit 0 the way a server nobody has joined does.
+vol 'rm -rf /data/Vein/Saved/SaveGames'
+out="$(scripts/backup.sh 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && grep -q "FAILED: no world in .* holds one" <<<"$out"; then
+  pass "a world archived before and gone now: fails, and names the archive that had it"
+else
+  fail "a lost world: exit $rc, said: $out"
+fi
+
 echo
 echo "passed: $PASSED   failed: $FAILED"
 [ "$FAILED" -eq 0 ]

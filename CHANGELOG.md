@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Fixed
+
+- **A world backed up before and gone now fails the backup.** `scripts/backup.sh` exited 0 with "no world yet" whenever `Vein/Saved/SaveGames` was missing, which is right for a server nobody has joined and wrong for one whose world was lost: every night after would have passed over it. Once the backup directory holds an archive of a world, the same absence fails, names that archive, and exits 1. `tests/e2e-backup-restore.sh` removes the world after a backup and requires the failure: 14 checks.
 
 ## [1.0.0] - 2026-10-18
 
