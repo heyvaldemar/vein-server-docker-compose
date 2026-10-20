@@ -18,13 +18,21 @@
 # server installs itself. An update counts only when the manifest afterwards
 # names Steam's build.
 #
-# AN UNANSWERED PLAYER QUERY IS NOT AN EMPTY SERVER. The count comes from A2S
-# on the query port, from inside the server's network namespace, asked three
-# times. A server that never answers is "?" and is skipped like an occupied
+# WHO IS ON COMES FROM THE SERVER'S LOG, NOT ITS STEAM ANSWER. VEIN does not
+# drop a player from what it tells Steam when they leave. On the machine this
+# template comes from, its A2S answer said "4 / 32" for hours after the log
+# showed all four disconnect, and an update that waits for an empty server
+# would never have found one. Vein.log records every join and every
+# disconnect, and a restart starts a new one, truthfully empty. With no log to
+# read, the count falls back to A2S, which can only count too many.
+#
+# AN UNANSWERED PLAYER QUERY IS NOT AN EMPTY SERVER. A2S is asked on the query
+# port, from inside the server's network namespace, three times. With no log
+# either, a server that never answers is "?" and is skipped like an occupied
 # one, and this exits 1, because a probe that can never tell is a probe
-# somebody should look at. On the machine this template comes from, an update
-# roll that read "cannot count" as zero had three game stacks reading as empty
-# whatever was happening on them.
+# somebody should look at. On the same machine, an update roll that read
+# "cannot count" as zero had three game stacks reading as empty whatever was
+# happening on them.
 #
 # tests/e2e-refresh.sh proves the decisions against a stand-in server.
 #   VEIN_PROJECT        the compose project   (default vein)
@@ -48,6 +56,7 @@ PROJECT="${VEIN_PROJECT:-vein}"
 COMPOSE="vein-server-docker-compose.yml"
 APP=2131400
 MANIFEST="/home/steam/vein/steamapps/appmanifest_$APP.acf"
+LOG="/home/steam/vein/Vein/Saved/Logs/Vein.log"
 QPORT="$(grep -E '^VEIN_SERVER_QUERY_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2-)"
 QPORT="${QPORT:-27015}"
 say() { echo "$(date '+%F %T') $*"; }
@@ -87,7 +96,31 @@ if [ "$MODE" = check ]; then
   exit 0
 fi
 
-players="$(docker run --rm --network "container:$cid" -e PORT="$QPORT" python:3.13-alpine python3 -c '
+# The log: a login maps a Steam id to a name, a join puts the name on, a
+# disconnect takes the id's name off. "?" when there is no log to read.
+from_log="?"
+if docker exec "$cid" test -r "$LOG" 2>/dev/null; then
+  from_log="$(docker exec "$cid" cat "$LOG" 2>/dev/null | docker run --rm -i python:3.13-alpine python3 -c '
+import re, sys
+names, on = {}, set()
+for raw in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
+    m = re.search(r"Login request: \?Name=([^?]+)\?\?ID=(\d+)", raw)
+    if m:
+        names[m.group(2)] = m.group(1)
+        continue
+    m = re.search(r"Join succeeded: (.+)$", raw)
+    if m:
+        on.add(m.group(1).strip())
+        continue
+    m = re.search(r"RemoveClientConnection - Removed address (\d+):0", raw)
+    if m and m.group(1) in names:
+        on.discard(names[m.group(1)])
+print(len(on))
+' 2>/dev/null || echo "?")"
+  case "$from_log" in ''|*[!0-9]*) from_log="?" ;; esac
+fi
+
+a2s="$(docker run --rm --network "container:$cid" -e PORT="$QPORT" python:3.13-alpine python3 -c '
 import os, socket
 port = int(os.environ["PORT"])
 req = b"\xff\xff\xff\xff\x54Source Engine Query\x00"
@@ -107,7 +140,13 @@ for _ in range(3):
 else:
     print("?")
 ' 2>/dev/null || echo "?")"
-case "$players" in ''|*[!0-9]*) players="?" ;; esac
+case "$a2s" in ''|*[!0-9]*) a2s="?" ;; esac
+players="$a2s"
+if [ "$from_log" != "?" ]; then
+  players="$from_log"
+  [ "$a2s" != "?" ] && [ "$a2s" != "$from_log" ] \
+    && say "the server's log has $from_log player(s) on, its Steam answer says $a2s; the log is believed (VEIN keeps players who left in that answer)"
+fi
 if [ "$players" = "?" ] && [ "$FORCE" != "true" ]; then
   say "behind ($installed -> $latest), and the server did not answer the player query three times, so nobody can say who is on; not restarting. --force restarts anyway" >&2
   exit 1
