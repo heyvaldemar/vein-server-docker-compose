@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.0.1] - 2026-10-20
+
 ### Fixed
 
 - **An update is no longer blocked by players who left.** VEIN does not drop a player from its Steam (A2S) answer when they disconnect: on the machine this template comes from it reported "4 / 32" for hours after its log showed all four leave. `scripts/refresh.sh` counted players over A2S, so after the first session it would have found the server occupied on every run and never updated it, and a server one build behind turns every player away. It now counts from `Vein/Saved/Logs/Vein.log` (logins, joins, disconnects), falling back to A2S only when there is no log, and says so when the two disagree. `tests/e2e-refresh.sh` adds three cases, 16 checks; on the old script all three fail: the phantom case waits ("4 player(s) are on"), a player in the log with A2S at 0 went ahead to a restart, and an empty log read as 2 players.
@@ -24,5 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scripts/backup.sh` and `scripts/restore.sh`**: the world (`Vein/Saved`) archived without the game files, written as `.partial` until the archive is shown to hold save files; restored at the exact path the server reads, with the previous world moved aside and every save file checked at its live path. `tests/e2e-backup-restore.sh` proves it by path and by byte, and shows that the same archive extracted at the volume's root leaves no world where the server looks.
 - **`update.sh`**: moves between release tags, refuses to cross a major version unattended, refuses to run over local changes, names any new required variable before anything has moved.
 
-[Unreleased]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/heyvaldemar/vein-server-docker-compose/releases/tag/v1.0.0
