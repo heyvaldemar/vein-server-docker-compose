@@ -1,6 +1,7 @@
 # VEIN dedicated server using Docker Compose
 
 [![Deployment Verification](https://github.com/heyvaldemar/vein-server-docker-compose/actions/workflows/deployment-verification.yml/badge.svg?branch=main)](https://github.com/heyvaldemar/vein-server-docker-compose/actions/workflows/deployment-verification.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15714/badge)](https://www.bestpractices.dev/projects/15714)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A VEIN dedicated server, pinned by digest, with a world this file is arranged around not losing and an update that never restarts the server under anybody.
