@@ -26,6 +26,12 @@
 # disconnect, and a restart starts a new one, truthfully empty. With no log to
 # read, the count falls back to A2S, which can only count too many.
 #
+# A LOG WITH NO JOINS IS NOT PROOF OF AN EMPTY SERVER. Phantoms come only after
+# real joins, which the log records. A log that shows no join at all while
+# A2S says players are on is a log written in a shape this parser does not
+# know (a game update can change it), and reading that as zero would restart
+# the server under them. So that case is "?", like a silent server.
+#
 # AN UNANSWERED PLAYER QUERY IS NOT AN EMPTY SERVER. A2S is asked on the query
 # port, from inside the server's network namespace, three times. With no log
 # either, a server that never answers is "?" and is skipped like an occupied
@@ -97,12 +103,13 @@ if [ "$MODE" = check ]; then
 fi
 
 # The log: a login maps a Steam id to a name, a join puts the name on, a
-# disconnect takes the id's name off. "?" when there is no log to read.
-from_log="?"
+# disconnect takes the id's name off. Prints "<on> <joins seen>"; "?" when
+# there is no log to read.
+from_log="?"; joins_seen=0
 if docker exec "$cid" test -r "$LOG" 2>/dev/null; then
   from_log="$(docker exec "$cid" cat "$LOG" 2>/dev/null | docker run --rm -i python:3.13-alpine python3 -c '
 import re, sys
-names, on = {}, set()
+names, on, seen = {}, set(), 0
 for raw in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
     m = re.search(r"Login request: \?Name=([^?]+)\?\?ID=(\d+)", raw)
     if m:
@@ -111,13 +118,16 @@ for raw in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
     m = re.search(r"Join succeeded: (.+)$", raw)
     if m:
         on.add(m.group(1).strip())
+        seen += 1
         continue
     m = re.search(r"RemoveClientConnection - Removed address (\d+):0", raw)
     if m and m.group(1) in names:
         on.discard(names[m.group(1)])
-print(len(on))
+print(len(on), seen)
 ' 2>/dev/null || echo "?")"
+  joins_seen="${from_log#* }"; from_log="${from_log%% *}"
   case "$from_log" in ''|*[!0-9]*) from_log="?" ;; esac
+  case "$joins_seen" in ''|*[!0-9]*) joins_seen=0 ;; esac
 fi
 
 a2s="$(docker run --rm --network "container:$cid" -e PORT="$QPORT" python:3.13-alpine python3 -c '
@@ -142,7 +152,12 @@ else:
 ' 2>/dev/null || echo "?")"
 case "$a2s" in ''|*[!0-9]*) a2s="?" ;; esac
 players="$a2s"
-if [ "$from_log" != "?" ]; then
+if [ "$from_log" != "?" ] && [ "$joins_seen" = 0 ] && [ "$a2s" != "0" ]; then
+  # No join in a shape the parser knows: an empty log on a server Steam calls
+  # empty is empty; anything else cannot be told apart from a format change.
+  players="?"
+  say "the server's log shows no joins at all, but its Steam answer says ${a2s}; the log's format may have changed, so nobody can say who is on" >&2
+elif [ "$from_log" != "?" ]; then
   players="$from_log"
   [ "$a2s" != "?" ] && [ "$a2s" != "$from_log" ] \
     && say "the server's log has $from_log player(s) on, its Steam answer says $a2s; the log is believed (VEIN keeps players who left in that answer)"

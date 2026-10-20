@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A log the refresh cannot read no longer counts as an empty server.** v1.0.1 counted players from `Vein.log`; a log with no join in the shape it knows read as zero players, and the refresh would restart the server under whoever Steam's answer said was on. Phantom players come only after real joins, which the log records, so a log with no joins at all while A2S says players are on is a log in an unknown format (a game update could change it). That count is now "?": the refresh waits, exits 1, and says the log's format may have changed. An empty log on a server A2S also calls empty is still empty. `tests/e2e-refresh.sh` adds a log with no joins and one with joins in an unknown shape, both with A2S at 2, and a log with no joins with A2S at 0; on v1.0.1 the first two said "the log is believed" and would have restarted. 18 checks.
 - **The README says what a Demo player actually sees**: nothing in the server list, and "connection failed" on Direct Connect. v1.0.1 said the player finds the server and is refused, which the source server's record does not support.
 
 ## [1.0.1] - 2026-10-20

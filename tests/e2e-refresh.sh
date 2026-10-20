@@ -170,11 +170,28 @@ out="$(VEIN_REMOTE_BUILD=101 refresh 2>&1)"; rc=$?
 if [ "$rc" = 0 ] && grep -q "but 1 player(s) are on" <<<"$out"; then pass "Steam says 0, the log has one player on: waits"; else fail "Steam says 0, the log has one player on: exit $rc, said: $out"; fi
 if [ "$(started "$p")" = "$before" ]; then pass "Steam says 0, the log has one player on: not restarted"; else fail "Steam says 0, the log has one player on: restarted"; fi
 
-# 11. A log that exists and is empty is a server nobody has joined since it
-# started: empty, whatever Steam says.
+# 11. A log with no joins at all, while Steam's answer says two are on, is a
+# log this script cannot read, not an empty server. Phantoms come only after
+# real joins, which the log records; no joins and players on means the joins
+# are written in a shape the parser does not know. Unknown, not zero: wait,
+# exit 1, and say why.
 start players:2 100 " "
 out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
-if [ "$rc" = 0 ] && grep -q "would restart to update (100 -> 101): players online: 0" <<<"$out"; then pass "a log with no joins: empty, it would restart"; else fail "a log with no joins: exit $rc, said: $out"; fi
+if [ "$rc" = 1 ] && grep -q "shows no joins at all" <<<"$out"; then pass "no joins in the log, Steam says 2: unknown, waits, exit 1"; else fail "no joins in the log, Steam says 2: exit $rc, said: $out"; fi
+
+# 12. THE FORMAT CHANGED. Two players joined, written in a shape the parser
+# has never seen. Read as zero, the refresh would restart under them.
+U1='[2026.10.19-22.01.10:100][  0]LogNet: Player arrived: PlayerOne id=76561190000000001'
+U2='[2026.10.19-22.05.00:100][  0]LogNet: Player arrived: PlayerTwo id=76561190000000002'
+start players:2 100 "$U1|$U2"
+out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && grep -q "shows no joins at all" <<<"$out"; then pass "joins in an unknown format, Steam says 2: unknown, not zero"; else fail "joins in an unknown format: exit $rc, said: $out"; fi
+
+# 13. And no joins with nobody on by Steam's answer either: empty, it would
+# restart. The rule above must not freeze a server that really is empty.
+start players:0 100 " "
+out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && grep -q "would restart to update (100 -> 101): players online: 0" <<<"$out"; then pass "no joins in the log, Steam says 0: empty, it would restart"; else fail "no joins, Steam says 0: exit $rc, said: $out"; fi
 
 echo
 echo "passed: $PASSED   failed: $FAILED"
