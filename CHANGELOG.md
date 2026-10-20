@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Fixed
+
+- **The README says what a Demo player actually sees**: nothing in the server list, and "connection failed" on Direct Connect. v1.0.1 said the player finds the server and is refused, which the source server's record does not support.
 
 ## [1.0.1] - 2026-10-20
 
