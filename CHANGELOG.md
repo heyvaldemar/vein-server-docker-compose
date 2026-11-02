@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Fixed
+
+- **A log read that Docker cut off is no longer counted, or blamed on the log's format.** `scripts/refresh.sh` piped `docker exec cat Vein.log` straight into its parser, so an exec cut off by a restart (exit 137 after part of the file, measured on Docker 29.7.2) was counted as the whole log. A read that stops before the last join counts a player who is on as gone; here it came back as "no joins at all" and the message said the log's format may have changed. The log is now copied first, and a copy from an exec that did not end with 0 is not counted: the Steam answer, which can only count too many, decides alone, and the run says so.
+- **Docker's own message is no longer read as the installed build.** When the container stops under the exec, Docker prints "cannot exec in a stopped state" on stdout with exit 128, and the refresh took that text for the build and went on to "would restart to update (cannot exec in a stopped state -> 101)". The build is now a number from an exec that ended with 0, or unknown.
+- `tests/e2e-refresh.sh` cases 14 and 15 break those two reads through a wrapper around the real `docker`; the released script fails both. On the server this template comes from, a chat bot read a Docker error on stdout as part of a game's log.
 
 ## [1.0.2] - 2026-10-20
 

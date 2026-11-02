@@ -70,8 +70,13 @@ say() { echo "$(date '+%F %T') $*"; }
 cid="$(docker compose -p "$PROJECT" ps -q --status running vein-server 2>/dev/null || true)"
 [ -n "$cid" ] || { say "the server is not running; nothing to refresh"; exit 0; }
 
+# A number from an exec that ended with 0, or nothing. Docker can print its
+# own failure on stdout ("cannot exec in a stopped state", exit 128), and
+# that text is not a build.
 local_build() {
-  docker exec "$cid" sh -c "grep -oE '\"buildid\"[[:space:]]+\"[0-9]+\"' $MANIFEST 2>/dev/null | grep -oE '[0-9]+' | head -1" 2>/dev/null
+  local out
+  out=$(docker exec "$cid" sh -c "grep -oE '\"buildid\"[[:space:]]+\"[0-9]+\"' $MANIFEST 2>/dev/null | grep -oE '[0-9]+' | head -1" 2>/dev/null) || return 0
+  case "$out" in ''|*[!0-9]*) ;; *) echo "$out" ;; esac
 }
 remote_build() {
   if [ -n "${VEIN_REMOTE_BUILD+x}" ]; then echo "$VEIN_REMOTE_BUILD"; return; fi
@@ -105,9 +110,21 @@ fi
 # The log: a login maps a Steam id to a name, a join puts the name on, a
 # disconnect takes the id's name off. Prints "<on> <joins seen>"; "?" when
 # there is no log to read.
+#
+# A LOG THAT WAS NOT READ WHOLE IS NO LOG. An exec cut off by a restart ends
+# with 137 after printing part of the file, and a read that stops before the
+# last join counts a player who is on as gone. Piped straight into the
+# parser, that read used to come back as "no joins at all" and blame the
+# log's format. The log is copied first, and a copy from an exec that did not
+# end with 0 is not counted: the Steam answer, which can only count too many,
+# decides alone.
 from_log="?"; joins_seen=0
+LOGCOPY=""
+trap '[ -z "$LOGCOPY" ] || rm -f "$LOGCOPY"' EXIT
 if docker exec "$cid" test -r "$LOG" 2>/dev/null; then
-  from_log="$(docker exec "$cid" cat "$LOG" 2>/dev/null | docker run --rm -i python:3.13-alpine python3 -c '
+  LOGCOPY="$(mktemp)" || exit 1
+  if docker exec "$cid" cat "$LOG" >"$LOGCOPY" 2>/dev/null; then
+    from_log="$(docker run --rm -i python:3.13-alpine python3 -c '
 import re, sys
 names, on, seen = {}, set(), 0
 for raw in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
@@ -124,10 +141,13 @@ for raw in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
     if m and m.group(1) in names:
         on.discard(names[m.group(1)])
 print(len(on), seen)
-' 2>/dev/null || echo "?")"
-  joins_seen="${from_log#* }"; from_log="${from_log%% *}"
-  case "$from_log" in ''|*[!0-9]*) from_log="?" ;; esac
-  case "$joins_seen" in ''|*[!0-9]*) joins_seen=0 ;; esac
+' <"$LOGCOPY" 2>/dev/null || echo "?")"
+    joins_seen="${from_log#* }"; from_log="${from_log%% *}"
+    case "$from_log" in ''|*[!0-9]*) from_log="?" ;; esac
+    case "$joins_seen" in ''|*[!0-9]*) joins_seen=0 ;; esac
+  else
+    say "the server's log could not be read whole (docker exec ended with $?), so the count goes by its Steam answer alone"
+  fi
 fi
 
 a2s="$(docker run --rm --network "container:$cid" -e PORT="$QPORT" python:3.13-alpine python3 -c '

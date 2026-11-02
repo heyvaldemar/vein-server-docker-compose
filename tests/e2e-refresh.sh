@@ -193,6 +193,42 @@ start players:0 100 " "
 out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
 if [ "$rc" = 0 ] && grep -q "would restart to update (100 -> 101): players online: 0" <<<"$out"; then pass "no joins in the log, Steam says 0: empty, it would restart"; else fail "no joins, Steam says 0: exit $rc, said: $out"; fi
 
+# DOCKER FAILING ON THE WAY. When an exec fails, Docker can print its error
+# where the program's output goes: "cannot exec in a stopped state" on stdout
+# with exit 128 when the container stops under it, or part of the output and
+# then 137 when a restart cuts it off (both measured on Docker 29.7.2). A
+# wrapper early in PATH passes every docker call to the real one except the
+# read it is told to break.
+REAL_DOCKER="$(command -v docker)"
+mkdir -p "$WORK/bin"
+cat >"$WORK/bin/docker" <<'SH'
+#!/bin/bash
+if [ "${1:-}" = exec ]; then
+  case "$BREAK:$*" in
+    log:*" cat "*Vein.log) "$REAL_DOCKER" "$@" | head -n "$KEEP"; exit 137 ;;
+    build:*appmanifest*)   echo "cannot exec in a stopped state"; exit 128 ;;
+  esac
+fi
+exec "$REAL_DOCKER" "$@"
+SH
+chmod +x "$WORK/bin/docker"
+broken() { PATH="$WORK/bin:$PATH" REAL_DOCKER="$REAL_DOCKER" BREAK="$1" KEEP="${2:-0}" refresh "${@:3}"; }
+
+# 14. The log read is cut off after the first player left and before the
+# second joined. The second player is on, and Steam's answer says so. Counted
+# from the part that arrived, the log shows nobody; this used to end in
+# "no joins at all" and the log's format taking the blame.
+start players:1 100 "$L1|$J1|$G1|$L2|$J2"; before="$(started "$p")"
+out="$(VEIN_REMOTE_BUILD=101 broken log 3 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && grep -q "could not be read whole (docker exec ended with 137)" <<<"$out" && grep -q "but 1 player(s) are on" <<<"$out"; then pass "log read cut off: Steam's answer decides, one player on, waits"; else fail "log read cut off: exit $rc, said: $out"; fi
+if [ "$(started "$p")" = "$before" ]; then pass "log read cut off: not restarted"; else fail "log read cut off: restarted"; fi
+
+# 15. The installed build read fails, and Docker's message comes back where the
+# number would be. It is not a build: nothing is decided.
+start players:0 100
+out="$(VEIN_REMOTE_BUILD=101 broken build 0 --dry-run 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && grep -q "could not read both builds: installed '?'" <<<"$out"; then pass "Docker's error where the build goes: not a build, exit 1"; else fail "Docker's error where the build goes: exit $rc, said: $out"; fi
+
 echo
 echo "passed: $PASSED   failed: $FAILED"
 [ "$FAILED" -eq 0 ]
