@@ -74,9 +74,21 @@ jobs:
           sudo systemctl restart docker
 
       - name: First start - the game is downloaded into the volume
+        env:
+          STEAM_GSLT: ${{ secrets.VEIN_CI_STEAM_GSLT }}
         run: |
           cp .env.example .env
           sed -i "s/^VEIN_SERVER_ADMIN_PASSWORD=.*/VEIN_SERVER_ADMIN_PASSWORD=$(openssl rand -hex 16)/" .env
+          # A game server login token from the repository secret, when it
+          # exists, into .env through awk's environment, never a command line
+          # here. (The image itself passes it to the server as
+          # +sv_setsteamaccount, on the server's command line.)
+          if [ -n "$STEAM_GSLT" ]; then
+            awk '!/^#? *VEIN_SERVER_STEAM_GSLT=/ { print } END { print "VEIN_SERVER_STEAM_GSLT=" ENVIRON["STEAM_GSLT"] }' .env > .env.new && mv .env.new .env
+            echo "a game server login token from the repository secret"
+          else
+            echo "::warning::no VEIN_CI_STEAM_GSLT secret: no token, and in CI the server has not answered the Steam query without one"
+          fi
           docker volume create vein-server-data >/dev/null
           $COMPOSE up -d
 
