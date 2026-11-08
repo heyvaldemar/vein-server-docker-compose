@@ -199,8 +199,9 @@ jobs:
         # ON A FIRST START THE IMAGE RUNS THE SERVER TWICE. It starts it for up
         # to 30 seconds to generate its config, kills it, and starts it again.
         # The first instance answers A2S too, so Docker can read healthy before
-        # the real start. Settled means: for a minute, the same process owns
-        # the query port and the check is green.
+        # the real start, and the real one did not answer at all in CI. So:
+        # healthy once, then one restart (no config run), then settled: for a
+        # minute, the same process owns the query port and the check is green.
         run: |
           cid="$($COMPOSE ps -q vein-server)"
           s=none
@@ -212,8 +213,15 @@ jobs:
           done
           echo "health: $s"
           if [ "$s" = healthy ]; then
+            # The real server that follows the config run did not answer A2S in
+            # CI: its query socket filled unread and its log said SteamAPI_Init
+            # had not succeeded. A second start skips the config run, as every
+            # start after the first does; restart once, then wait.
+            sleep 60
+            $COMPOSE restart vein-server >/dev/null
+            echo "restarted once after the first start"
             prev=""; stable=0
-            for _ in $(seq 1 60); do
+            for _ in $(seq 1 90); do
               own="$(docker exec -i "$cid" sh -s 27015 < tests/fixtures/port-owner.sh 2>/dev/null | awk '{ print $1 }' | tr '\n' ' ')"
               if [ -n "$own" ] && [ "$own" = "$prev" ] && docker exec "$cid" bash /healthcheck.sh 27015 >/dev/null 2>&1; then
                 stable=$((stable + 1))
