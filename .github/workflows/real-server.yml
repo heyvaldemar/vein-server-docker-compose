@@ -1,0 +1,179 @@
+name: Real Server
+
+# THE HEALTH CHECK, PROVEN AGAINST THE REAL GAME, on every push and pull
+# request, every Monday at 05:47 UTC, and by hand. The game is about 10 GB.
+# Its own workflow, so Deployment Verification's badge says what the stand-in
+# tests and the linting prove, and this one what the real server does.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: "47 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: real-server-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  game:
+    name: The real server, and the health check asking it
+    # The game is about 10 GB, small enough for every push. It is installed
+    # the way a first start does, and the health check is proven against it
+    # both ways: red while SteamCMD downloads and nothing is bound, green once
+    # the server answers A2S_INFO, red with the server stopped by SIGSTOP
+    # while the old /proc check stays green, green again after SIGCONT.
+    # UBUNTU 24.04, NOT ubuntu-latest. On ubuntu-26.04 with Docker Engine
+    # 29.4.2 the server bound its query port and never answered it, its log
+    # saying SteamAPI_Init had not succeeded (runs 42522448352, 42525260670),
+    # as CS2 in its template never logged into Steam there. Measured here
+    # whether 24.04 differs.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      COMPOSE: docker compose -f vein-server-docker-compose.yml -p vein
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Make room for the game
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
+          df -h /
+
+      - name: Docker 29.4.2 answers socketcall with ENOSYS; give its daemon the profile 29.4.3 ships
+        # SteamCMD is 32-bit and makes every socket through socketcall(2),
+        # which Docker Engine 29.4.2 alone refuses (moby/moby#52506); the
+        # ubuntu-26.04 runner ships it. On that version, and only there, the
+        # daemon gets the default profile 29.4.3 ships (moby/profiles seccomp
+        # v0.2.3), pinned by commit and checksum.
+        run: |
+          v="$(docker version --format '{{.Server.Version}}')"
+          if [ "$v" != 29.4.2 ]; then echo "Docker $v: its own profile allows socketcall"; exit 0; fi
+          sudo curl -fsSL -o /etc/docker/seccomp-29.4.3.json \
+            https://raw.githubusercontent.com/moby/profiles/836ae4d37ef2ec995c77c99fc55f5b5f3af3a897/seccomp/default.json
+          echo "536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74  /etc/docker/seccomp-29.4.3.json" | sha256sum -c -
+          f=/etc/docker/daemon.json
+          [ -s "$f" ] || echo '{}' | sudo tee "$f" >/dev/null
+          sudo jq '. + {"seccomp-profile": "/etc/docker/seccomp-29.4.3.json"}' "$f" | sudo tee "$f.new" >/dev/null
+          sudo mv "$f.new" "$f"
+          sudo systemctl restart docker
+
+      - name: First start - the game is downloaded into the volume
+        run: |
+          cp .env.example .env
+          sed -i "s/^VEIN_SERVER_ADMIN_PASSWORD=.*/VEIN_SERVER_ADMIN_PASSWORD=$(openssl rand -hex 16)/" .env
+          docker volume create vein-server-data >/dev/null
+          $COMPOSE up -d
+
+      - name: While SteamCMD downloads, nothing is bound and the check is red
+        run: |
+          cid="$($COMPOSE ps -q vein-server)"
+          sleep 45
+          if docker exec "$cid" sh -c "grep -qs '^VeinServer' /proc/[0-9]*/comm"; then
+            echo "the game is already running 45 s in; the download stage was too short to sample"
+            exit 0
+          fi
+          n=0; out="$(docker exec "$cid" bash /healthcheck.sh 27015 2>&1)" || n=$?
+          echo "45 s in, before the game runs: the check exits $n: $out"
+          [ "$n" = 1 ] || { echo "::error::the check was not red before the game ran"; exit 1; }
+
+      - name: Wait for the health check to go green, and the real server to settle
+        # ON A FIRST START THE IMAGE RUNS THE SERVER TWICE. It starts it for up
+        # to 30 seconds to generate its config, kills it, and starts it again.
+        # The first instance answers A2S too, so Docker can read healthy before
+        # the real start, and the real one did not answer at all in CI. So:
+        # healthy once, then one restart (no config run), then settled: for a
+        # minute, the same process owns the query port and the check is green.
+        run: |
+          cid="$($COMPOSE ps -q vein-server)"
+          s=none
+          for _ in $(seq 1 180); do
+            s="$(docker inspect "$cid" --format '{{.State.Health.Status}}' 2>/dev/null || echo none)"
+            [ "$s" = healthy ] && break
+            [ "$s" = unhealthy ] && break
+            sleep 10
+          done
+          echo "health: $s"
+          if [ "$s" = healthy ]; then
+            # The real server that follows the config run did not answer A2S in
+            # CI: its query socket filled unread and its log said SteamAPI_Init
+            # had not succeeded. A second start skips the config run, as every
+            # start after the first does; restart once, then wait.
+            sleep 60
+            $COMPOSE restart vein-server >/dev/null
+            echo "restarted once after the first start"
+            prev=""; stable=0
+            for _ in $(seq 1 90); do
+              own="$(docker exec -i "$cid" sh -s 27015 < tests/fixtures/port-owner.sh 2>/dev/null | awk '{ print $1 }' | tr '\n' ' ')"
+              if [ -n "$own" ] && [ "$own" = "$prev" ] && docker exec "$cid" bash /healthcheck.sh 27015 >/dev/null 2>&1; then
+                stable=$((stable + 1))
+              else
+                stable=0
+              fi
+              prev="$own"
+              [ "$stable" -ge 6 ] && { echo "settled: pid ${own}has owned UDP 27015 and answered for a minute"; docker exec "$cid" bash /healthcheck.sh 27015; exit 0; }
+              sleep 10
+            done
+            echo "::error::the server never settled: the owner of UDP 27015 kept changing or the check kept failing"
+          else
+            echo "::error::the server never reported healthy"
+          fi
+          $COMPOSE logs --tail 80
+          echo "--- the health check's own words, last runs"
+          docker inspect "$cid" --format '{{range .State.Health.Log}}exit {{.ExitCode}}: {{.Output}}{{end}}' | tail -c 2000
+          echo "--- UDP sockets in the container"
+          docker exec "$cid" cat /proc/net/udp
+          exit 1
+
+      - name: Plant - the process that answers, stopped, keeps the old check green and turns this one red
+        # The check up to v1.0.3 was VeinServer in /proc. SIGSTOP on the process that
+        # owns the port's UDP socket (tests/fixtures/port-owner.sh; a name match
+        # is not enough, LinuxGSM's tmux carries the game's name and stopping it
+        # stops nothing that answers) leaves every process there and nothing
+        # answering: the old check must still pass and this one fail; after
+        # SIGCONT this one passes again.
+        run: |
+          cid="$($COMPOSE ps -q vein-server)"
+          # The owners are visible only to their own user; try every uid here.
+          uids="$(docker exec "$cid" sh -c 'cat /proc/[0-9]*/status 2>/dev/null' | awk '/^Uid:/ { print $2 }' | sort -u)"
+          own=""; as=""
+          for u in $uids; do
+            own="$(docker exec -u "$u" -i "$cid" sh -s 27015 < tests/fixtures/port-owner.sh 2>/dev/null)" && { as="$u"; break; }
+          done
+          [ -n "$own" ] || { echo "::error::no user in the container can see who owns UDP 27015"; docker exec "$cid" cat /proc/net/udp; exit 1; }
+          echo "UDP 27015 is owned by (pid uid comm), as seen by uid $as:"; echo "$own"
+          pids="$(awk '{ print $1 }' <<<"$own" | tr '\n' ' ')"
+          docker exec -u "$as" "$cid" sh -c "kill -STOP $pids"
+          st="$(docker exec "$cid" sh -c "for p in $pids; do cut -d' ' -f3 /proc/\$p/stat; done" | tr '\n' ' ')"
+          o=0; docker exec "$cid" sh -c "grep -qs '^VeinServer' /proc/[0-9]*/comm" || o=$?
+          n=0; out="$(docker exec "$cid" bash /healthcheck.sh 27015 2>&1)" || n=$?
+          if [ "$n" = 0 ]; then
+            echo "--- the check stayed green with the owners stopped; who answered:"
+            docker exec -i "$cid" sh -s 27015 < tests/fixtures/udp-diag.sh || true
+          fi
+          docker exec -u "$as" "$cid" sh -c "kill -CONT $pids"
+          echo "owners stopped (states: $st): the old check exits $o, the new one $n: $out"
+          [ "$o" = 0 ] && [ "$n" = 1 ] || { echo "::error::expected the old check to pass (0) and the new one to fail (1)"; exit 1; }
+          for _ in $(seq 1 30); do
+            docker exec "$cid" bash /healthcheck.sh 27015 && exit 0
+            sleep 2
+          done
+          echo "::error::the game did not answer again after SIGCONT"; exit 1
+
+      - name: Stop
+        if: always()
+        run: |
+          $COMPOSE down -t 60 >/dev/null 2>&1 || true
+          docker volume rm -f vein-server-data >/dev/null 2>&1 || true

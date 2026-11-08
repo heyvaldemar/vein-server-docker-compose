@@ -74,7 +74,7 @@ scripts/restore.sh backups/vein-world-20261018-043000.tar.gz
 
 ## Testing
 
-CI installs the game from Steam and boots it on every push, about 10 GB, then: samples the health check while SteamCMD downloads and needs it red with nothing bound; waits for it to go green on the server's A2S answer; **stops the server** with SIGSTOP and needs it red while the old `/proc` check stays green, and green again after SIGCONT.
+`.github/workflows/real-server.yml` installs the game from Steam and boots it on every push, about 10 GB, then: samples the health check while SteamCMD downloads and needs it red with nothing bound; waits for it to go green on the server's A2S answer; **stops the server** with SIGSTOP and needs it red while the old `/proc` check stays green, and green again after SIGCONT.
 
 Without a game:
 
