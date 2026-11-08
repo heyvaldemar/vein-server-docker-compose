@@ -31,12 +31,15 @@ jobs:
     # both ways: red while SteamCMD downloads and nothing is bound, green once
     # the server answers A2S_INFO, red with the server stopped by SIGSTOP
     # while the old /proc check stays green, green again after SIGCONT.
-    # UBUNTU 24.04, NOT ubuntu-latest. On ubuntu-26.04 with Docker Engine
-    # 29.4.2 the server bound its query port and never answered it, its log
-    # saying SteamAPI_Init had not succeeded (runs 42522448352, 42525260670),
-    # as CS2 in its template never logged into Steam there. Measured here
-    # whether 24.04 differs.
-    runs-on: ubuntu-24.04
+    # NOT GREEN YET, AND WHY. The server binds its query port and, in CI,
+    # never answers it: the socket fills unread and its log says
+    # SteamAPI_Init had not succeeded. Measured on both the ubuntu-26.04 and
+    # the ubuntu-24.04 runner (runs 42525260670, 42527881043), after the
+    # image's config run and after a restart. CS2 in its template stopped
+    # logging into Steam from CI with a placeholder token the same day. The
+    # health check is red because the server does not answer the Steam
+    # query, which is what a server browser asks.
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
