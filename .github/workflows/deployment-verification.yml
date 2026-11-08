@@ -234,6 +234,10 @@ jobs:
           st="$(docker exec "$cid" sh -c "for p in $pids; do cut -d' ' -f3 /proc/\$p/stat; done" | tr '\n' ' ')"
           o=0; docker exec "$cid" sh -c "grep -qs '^VeinServer' /proc/[0-9]*/comm" || o=$?
           n=0; out="$(docker exec "$cid" bash /healthcheck.sh 27015 2>&1)" || n=$?
+          if [ "$n" = 0 ]; then
+            echo "--- the check stayed green with the owners stopped; who answered:"
+            docker exec -i "$cid" sh -s 27015 < tests/fixtures/udp-diag.sh || true
+          fi
           docker exec -u "$as" "$cid" sh -c "kill -CONT $pids"
           echo "owners stopped (states: $st): the old check exits $o, the new one $n: $out"
           [ "$o" = 0 ] && [ "$n" = 1 ] || { echo "::error::expected the old check to pass (0) and the new one to fail (1)"; exit 1; }
