@@ -81,13 +81,19 @@ services:
       # and its settings. scripts/backup.sh archives only Vein/Saved, and
       # scripts/restore.sh puts it back at exactly that path.
       - vein-server-data:/home/steam/vein
+      # The health check: A2S_INFO to the query port (see healthcheck: below).
+      - ./tools/healthcheck.sh:/healthcheck.sh:ro
     healthcheck:
-      # THE GAME, NOT THE WRAPPER. A check that passes while SteamCMD is still
-      # downloading is believed and wrong. /proc rather than pgrep; a comm
-      # file holds fifteen characters, hence the short name and the anchor at
-      # the start of the line. tests/e2e-healthcheck.sh runs it against a real
-      # container, in both directions.
-      test: ["CMD-SHELL", "grep -qs '^VeinServer' /proc/[0-9]*/comm"]
+      # THE GAME'S OWN ANSWER, NOT ITS PROCESS. tools/healthcheck.sh sends
+      # A2S_INFO, the Steam query every server browser sends, to the query port
+      # and is healthy only on the server's reply. Up to v1.0.3 this looked for
+      # VeinServer in /proc, which a hung or stopped server keeps; CI stops it
+      # with SIGSTOP and requires red. Not the log either: an empty server
+      # writes nothing. While SteamCMD downloads the game nothing is bound to
+      # the query port, so the check is red then, as it must be. Each check
+      # ends within 7 seconds. It asks from inside the container: it does not
+      # prove the ports are published on the host or open in a firewall.
+      test: ["CMD", "bash", "/healthcheck.sh", "${VEIN_SERVER_QUERY_PORT:-27015}"]
       interval: 30s
       timeout: 10s
       retries: 3

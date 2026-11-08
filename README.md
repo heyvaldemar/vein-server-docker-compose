@@ -20,7 +20,7 @@ The first start downloads the game through SteamCMD, about 10 GB, then starts th
 
 ```bash
 docker compose -p vein logs -f vein-server
-docker compose -p vein ps          # healthy once the VeinServer process is up
+docker compose -p vein ps          # healthy once the server answers A2S_INFO
 ```
 
 Players find it in the server browser if `VEIN_SERVER_PUBLIC=true`, or join from the in-game console with `connect <IP>:7777`. An IP address, not a hostname; see below.
@@ -51,6 +51,8 @@ Players find it in the server browser if `VEIN_SERVER_PUBLIC=true`, or join from
 
 **Memory follows the slot count.** On the machine this template comes from the server idled at 3.3 GB with one player on, and ran 16 slots under an 8 GB ceiling, then 32 under 16 GB. Raise `VEIN_SERVER_MEMORY_LIMIT` with `VEIN_SERVER_MAX_PLAYERS`. There is no swap on top of the ceiling, because a game tick that pages is a stutter every player sees.
 
+**The health check asks the server, not its process.** `tools/healthcheck.sh`, mounted read-only, sends A2S_INFO, the Steam query every server browser sends, to the query port and is healthy only on the server's reply. Up to v1.0.3 it looked for `VeinServer` in `/proc`, and a hung or stopped server keeps its process. While SteamCMD downloads the game nothing is bound to the query port, so the check is red then. Each check ends within 7 seconds, inside the 10 Docker gives it. **It asks from inside the container**: healthy proves the server answers there, not that the ports are published on the host or open in your firewall; the server browser, or `connect <IP>:7777`, is the test of that.
+
 **Docker Engine 29.4.2 stops SteamCMD, and only that release does.** Its default seccomp profile answers the 32-bit `socketcall` system call with "not implemented" ([moby/moby#52506](https://github.com/moby/moby/issues/52506); for GitHub Actions, the ubuntu-26.04 runner image ships it: [actions/runner-images#14790](https://github.com/actions/runner-images/issues/14790), with the move to 29.7.2 in [actions/runner-images#15205](https://github.com/actions/runner-images/pull/15205)), and SteamCMD is a 32-bit program that makes every socket with it. With Steam and the network both up, it prints `!!! Fatal Error: Steamcmd needs to be online to update.` or `CreateBoundSocket: failed to create socket, error [no name available] (38)`, and the game is never installed or updated. Measured in [a CI run on GitHub's ubuntu-26.04 runner, which ships 29.4.2](https://github.com/heyvaldemar/tf2-server-docker-compose/blob/main/docs/evidence/docker-29.4.2-socketcall.md): SteamCMD failed in this template's pinned image there, and logged in once the daemon had the profile Docker 29.4.3 ships. 29.4.3 reverted the rule, and Ubuntu 26.04's own `docker.io` (27.5.1) never had it. Check with `docker version --format '{{.Server.Version}}'` and upgrade; until you can, point [`seccomp-profile` in `daemon.json`](https://docs.docker.com/reference/cli/dockerd/#daemon-configuration-file) at [moby/profiles seccomp v0.2.3](https://github.com/moby/profiles/blob/836ae4d37ef2ec995c77c99fc55f5b5f3af3a897/seccomp/default.json) and restart Docker.
 
 ## Backups
@@ -72,13 +74,15 @@ scripts/restore.sh backups/vein-world-20261018-043000.tar.gz
 
 ## Testing
 
-Three tests run in CI on every push, none of them with a game download:
+CI installs the game from Steam and boots it on every push, about 10 GB, then: samples the health check while SteamCMD downloads and needs it red with nothing bound; waits for it to go green on the server's A2S answer; **stops the server** with SIGSTOP and needs it red while the old `/proc` check stays green, and green again after SIGCONT.
 
-- `tests/e2e-healthcheck.sh`: the health check in both directions. With the game process killed and the image's wrapper still running, it must go red.
+Without a game:
+
+- `tests/e2e-healthcheck.sh`: the health check in the pinned image against a stand-in that answers A2S_INFO, answers after a challenge, stays silent, or is not there: healthy, healthy, unhealthy within 7 seconds, unhealthy.
 - `tests/e2e-refresh.sh`: eighteen decisions of the refresh against a stand-in server that writes an app manifest, optionally a `Vein.log`, and answers A2S with players, with nobody, behind the challenge, or not at all. With "cannot count" read as zero instead, the silent case goes ahead and fails; with the count taken from A2S instead of the log, the log cases fail, the phantom players among them; with a log that matches nothing read as zero, the unknown-format cases go ahead.
 - `tests/e2e-backup-restore.sh`: a world out and back in, by path and by byte, the refusals, and the contrast. The same archive extracted at the volume's root leaves no world where the server looks; a restore changed to do that fails four assertions.
 
-CI also lints the shell and the workflows, scans the pinned image with Trivy, and checks daily that the pin still resolves to what upstream publishes. CI does not boot the game: the first start is a 10 GB SteamCMD download, and a test that pretends a runner does that in time is a test that never runs.
+CI also lints the shell and the workflows, scans the pinned image with Trivy, and checks daily that the pin still resolves to what upstream publishes.
 
 ## Supply chain trust
 
