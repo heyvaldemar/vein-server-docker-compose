@@ -195,16 +195,39 @@ jobs:
           echo "45 s in, before the game runs: the check exits $n: $out"
           [ "$n" = 1 ] || { echo "::error::the check was not red before the game ran"; exit 1; }
 
-      - name: Wait for the health check to go green
+      - name: Wait for the health check to go green, and the real server to settle
+        # ON A FIRST START THE IMAGE RUNS THE SERVER TWICE. It starts it for up
+        # to 30 seconds to generate its config, kills it, and starts it again.
+        # The first instance answers A2S too, so Docker can read healthy before
+        # the real start. Settled means: for a minute, the same process owns
+        # the query port and the check is green.
         run: |
           cid="$($COMPOSE ps -q vein-server)"
+          s=none
           for _ in $(seq 1 180); do
             s="$(docker inspect "$cid" --format '{{.State.Health.Status}}' 2>/dev/null || echo none)"
-            [ "$s" = healthy ] && { echo "health: $s"; docker exec "$cid" bash /healthcheck.sh 27015; exit 0; }
+            [ "$s" = healthy ] && break
             [ "$s" = unhealthy ] && break
             sleep 10
           done
-          echo "::error::the server never reported healthy"
+          echo "health: $s"
+          if [ "$s" = healthy ]; then
+            prev=""; stable=0
+            for _ in $(seq 1 60); do
+              own="$(docker exec -i "$cid" sh -s 27015 < tests/fixtures/port-owner.sh 2>/dev/null | awk '{ print $1 }' | tr '\n' ' ')"
+              if [ -n "$own" ] && [ "$own" = "$prev" ] && docker exec "$cid" bash /healthcheck.sh 27015 >/dev/null 2>&1; then
+                stable=$((stable + 1))
+              else
+                stable=0
+              fi
+              prev="$own"
+              [ "$stable" -ge 6 ] && { echo "settled: pid ${own}has owned UDP 27015 and answered for a minute"; docker exec "$cid" bash /healthcheck.sh 27015; exit 0; }
+              sleep 10
+            done
+            echo "::error::the server never settled: the owner of UDP 27015 kept changing or the check kept failing"
+          else
+            echo "::error::the server never reported healthy"
+          fi
           $COMPOSE logs --tail 80
           echo "--- the health check's own words, last runs"
           docker inspect "$cid" --format '{{range .State.Health.Log}}exit {{.ExitCode}}: {{.Output}}{{end}}' | tail -c 2000
