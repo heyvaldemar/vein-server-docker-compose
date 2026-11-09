@@ -63,7 +63,7 @@ if [ "$saves" -lt 1 ] || [ "$outside" -gt 0 ]; then
 fi
 
 stamp="$(date +%Y%m%d-%H%M%S)"
-docker run --rm -v "$VOLUME":/data -v "$DIR":/in:ro -e STAMP="$stamp" -e FILE="$FILE" alpine:3.20 sh -euc '
+STAMP="$stamp" FILE="$FILE" docker run --rm -v "$VOLUME":/data -v "$DIR":/in:ro -e STAMP -e FILE alpine:3.20 sh -euc '
   mkdir -p /data/Vein
   if [ -e /data/Vein/Saved ]; then mv /data/Vein/Saved "/data/Vein/Saved.before-restore-$STAMP"; fi
   tar -xzf "/in/$FILE" -C /data/Vein

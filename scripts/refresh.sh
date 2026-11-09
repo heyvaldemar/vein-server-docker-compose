@@ -150,7 +150,7 @@ print(len(on), seen)
   fi
 fi
 
-a2s="$(docker run --rm --network "container:$cid" -e PORT="$QPORT" python:3.13-alpine python3 -c '
+a2s="$(PORT="$QPORT" docker run --rm --network "container:$cid" -e PORT python:3.13-alpine python3 -c '
 import os, socket
 port = int(os.environ["PORT"])
 req = b"\xff\xff\xff\xff\x54Source Engine Query\x00"
