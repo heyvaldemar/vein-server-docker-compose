@@ -77,5 +77,16 @@ args=(
 )
 [ -n "${VEIN_ADMIN_PASSWORD:-}" ] && args+=("-AdminPassword=$VEIN_ADMIN_PASSWORD")
 cd "$dir" || exit 1
-exec ./VeinServer.sh "${args[@]}"
+
+# A CONSOLE THE IMAGE CAN WRITE TO. On a stop the image's entrypoint sends
+# the server "vein.Saves.Async" through the server's standard input, but only
+# when /proc/<pid>/fd/0 is something it can write to; with the container's
+# stdin, /dev/null, the command went nowhere, the image waited its ten
+# seconds, and the server stopped without a save. The server gets a pipe
+# instead, opened for reading and writing so it never reaches its end, at a
+# path the image's writer can open.
+console=/tmp/vein-console
+rm -f "$console"
+mkfifo -m 600 "$console" || { echo "start-server: cannot make the console pipe" >&2; exit 1; }
+exec ./VeinServer.sh "${args[@]}" 0<>"$console"
 }

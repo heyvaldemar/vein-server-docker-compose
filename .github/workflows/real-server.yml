@@ -262,6 +262,23 @@ jobs:
       - name: The probe sees what it looks for - a canary in a log and on two command lines
         run: tests/secret-probe.sh selftest
 
+      - name: MEASURE - the console takes vein.Saves.Async, and what it writes
+        # The command the image sends on a stop, written by hand into the
+        # server's console pipe while it runs: the files under SaveGames and
+        # the server's own log, before and for 40 seconds after.
+        run: |
+          cid="$($COMPOSE ps -q vein-server)"
+          u="$(docker exec "$cid" sh -c "awk '/^Uid:/ { print \$2 }' /proc/1/status")"
+          saves() { docker exec "$cid" sh -c 'find /home/steam/vein/Vein/Saved/SaveGames -type f -exec stat -c "%Y %s %n" {} + 2>/dev/null | sort -n | tail -4' | sed 's#/home/steam/vein/Vein/Saved/##'; }
+          echo "before: $(saves | tr '\n' ';')"
+          echo "fd 0 of the server: $(docker exec "$cid" sh -c 'for p in $(pgrep -f VeinServer); do printf "%s %s -> %s\n" "$p" "$(cat /proc/$p/comm)" "$(readlink /proc/$p/fd/0)"; done' | tr '\n' ';')"
+          since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          docker exec -u "$u" "$cid" sh -c 'printf "vein.Saves.Async\r\n" > /tmp/vein-console' && echo "written to the console"
+          for i in 1 2 3 4; do sleep 10; echo "${i}0 s: $(saves | tr '\n' ';')"; done
+          echo "the server's log since:"
+          docker logs --since "$since" "$cid" 2>&1 | grep -a -i -E 'sav|vein[.]|cmd|command|console' | tail -20 | cut -c1-200
+          docker exec "$cid" sh -c 'tail -c 4000 /home/steam/vein/Vein/Saved/Logs/Vein.log' | grep -a -i -E 'sav|command|cmd' | tail -15 | cut -c1-200
+
       - name: A stop - timed, its exit code, and what was written on the way out (tests/clean-stop.sh)
         # The compose file relies on the image's SAVE_ON_SHUTDOWN for the
         # world. Measured here: the seconds from docker compose stop to the
