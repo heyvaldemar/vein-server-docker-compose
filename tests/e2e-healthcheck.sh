@@ -68,6 +68,15 @@ check
 seen=$(docker logs "$NET" 2>&1 | grep '^seen ')
 [ "$seen" = "seen 512 True" ] && pass "the stand-in saw one request, 512 bytes, valid" || fail "the stand-in saw: ${seen:-nothing}"
 
+# Two hundred checks in one container, every one healthy. A check that wrote
+# its request with a newline byte in it sent two short datagrams the server
+# drops: about one check in sixty-four, so the check v1.1.0 shipped fails this
+# far more often than not.
+many=$(docker run --rm --platform linux/amd64 --network "container:$NET" --entrypoint bash \
+  -v "$PWD/tools/healthcheck.sh:/healthcheck.sh:ro" "$IMAGE" \
+  -c 'n=0; for _ in $(seq 1 200); do bash /healthcheck.sh 7777 >/dev/null 2>&1 || n=$((n + 1)); done; echo "$n"' 2>/dev/null)
+[ "$many" = 0 ] && pass "two hundred checks in a row: every one healthy" || fail "two hundred checks in a row: ${many:-?} failed"
+
 standin answers iface || fail "the one-address stand-in never bound its port"
 check
 [ "$rc" = 0 ] && pass "bound to the interface address: healthy" || fail "one address: exit $rc, $out"

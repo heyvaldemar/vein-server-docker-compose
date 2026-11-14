@@ -51,8 +51,9 @@ vol 'mkdir -p /data/Vein/Saved/SaveGames/slot /data/Vein/Saved/Config/LinuxServe
      echo world-v1 > /data/Vein/Saved/SaveGames/Autosave_0.sav &&
      echo world-v1-slot > /data/Vein/Saved/SaveGames/slot/World.sav &&
      echo "[/Script/Vein]" > /data/Vein/Saved/Config/LinuxServer/Game.ini &&
+     mkdir -p /data/Vein/Saved/Logs && echo "LogInit: Command Line: -AdminPassword=x" > /data/Vein/Saved/Logs/Vein.log &&
      chown -R 1000:1000 /data/Vein'
-sums_before="$(vol 'cd /data/Vein && find Saved -type f | sort | xargs sha256sum')"
+sums_before="$(vol 'cd /data/Vein && find Saved -type f ! -path "Saved/Logs/*" | sort | xargs sha256sum')"
 
 # 2. The backup holds the world and nothing else.
 out="$(scripts/backup.sh 2>&1)"; rc=$?
@@ -66,6 +67,7 @@ else
   fail "backup: the archive holds: $(tr '\n' ' ' <<<"$listing")"
 fi
 if grep -q "VeinServer.sh\|Binaries" <<<"$listing"; then fail "backup: the game files went into the archive"; else pass "backup: the game files did not"; fi
+if grep -q "^Saved/Logs" <<<"$listing"; then fail "backup: the server's logs went into the archive"; else pass "backup: the server's logs, where the engine writes its command line, did not"; fi
 
 # 3. THE CASE THIS FILE EXISTS FOR. The world is lost and a fresh one is
 # generated in its place; the restore must bring the old one back to the
@@ -73,7 +75,7 @@ if grep -q "VeinServer.sh\|Binaries" <<<"$listing"; then fail "backup: the game 
 vol 'rm -rf /data/Vein/Saved && mkdir -p /data/Vein/Saved/SaveGames && echo fresh-world > /data/Vein/Saved/SaveGames/Autosave_0.sav'
 out="$(scripts/restore.sh "$archive" 2>&1)"; rc=$?
 if [ "$rc" = 0 ]; then pass "restore: exit 0"; else fail "restore: exit $rc, said: $out"; fi
-sums_after="$(vol 'cd /data/Vein && find Saved -type f | sort | xargs sha256sum')"
+sums_after="$(vol 'cd /data/Vein && find Saved -type f ! -path "Saved/Logs/*" | sort | xargs sha256sum')"
 if [ "$sums_after" = "$sums_before" ]; then
   pass "restore: every file is back at its live path with the bytes it had"
 else

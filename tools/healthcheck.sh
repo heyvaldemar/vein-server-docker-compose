@@ -89,8 +89,18 @@ if [ "${#addrs[@]}" = 0 ]; then
 fi
 
 # A connection id of this check's own, never zero (the server ignores a
-# request without one), so only a reply to this request counts.
-id=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+# request without one), so only a reply to this request counts. NO NEWLINE
+# BYTE IN IT: bash writes printf's output line by line, so a 0x0a in the id
+# split the 512-byte request into two datagrams the server drops as too
+# short. With one id for all four tries, that was a whole check failed in
+# about one in sixty-four, the chance that four random bytes hold a 0x0a
+# (CI, 2026-11-14: the tenth timed request, id 0x..0a, lost in every run).
+# A 0x0a byte is sent as 0x0b.
+id=""
+for b in $(od -An -N4 -tx1 /dev/urandom); do
+  [ "$b" = 0a ] && b=0b
+  id+=$b
+done
 [ "$id" = 00000000 ] && id=00000001
 esc=""; for i in 0 2 4 6; do esc+="\\x${id:$i:2}"; done
 pad=$(printf '\\x00%.0s' $(seq 1 493))

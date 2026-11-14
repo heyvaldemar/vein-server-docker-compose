@@ -47,6 +47,15 @@ jobs:
       contents: read
     env:
       COMPOSE: docker compose -f vein-server-docker-compose.yml -p vein
+      # tests/secret-probe.sh: every password the compose file passes gets a
+      # random value, and none may reach a log or a command line. The admin
+      # password is the one the game reads only from its command line; the
+      # README says so, and the probe still requires it in no log.
+      PROBE_PROJECT: vein
+      PROBE_EXPECT: VEIN_SERVER_ADMIN_PASSWORD VEIN_SERVER_PASSWORD
+      PROBE_ARGV_OK: VEIN_SERVER_ADMIN_PASSWORD
+      PROBE_GAMELOG_OK: VEIN_SERVER_ADMIN_PASSWORD
+      PROBE_GAME_LOGS: "vein-server:/home/steam/vein/Vein/Saved/Logs/*.log"
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,8 +87,9 @@ jobs:
       - name: First start - the game is downloaded into the volume
         run: |
           cp .env.example .env
-          pw="$(openssl rand -hex 16)"; echo "::add-mask::$pw"
-          sed -i "s/^VEIN_SERVER_ADMIN_PASSWORD=.*/VEIN_SERVER_ADMIN_PASSWORD=$pw/" .env
+          # A random value for every password, the admin password and the
+          # join password among them (the server stays private).
+          tests/secret-probe.sh plant
           grep "^VEIN_SERVER_PUBLIC=false$" .env
           docker volume create vein-server-data >/dev/null
           $COMPOSE up -d
@@ -117,6 +127,7 @@ jobs:
             # The proof covers a restart too: a second start skips the config
             # run, as every start after the first does.
             sleep 60
+            tests/secret-probe.sh check "first start" || exit 1
             $COMPOSE restart vein-server >/dev/null
             echo "restarted once after the first start"
             prev=""; stable=0
@@ -128,7 +139,7 @@ jobs:
                 stable=0
               fi
               prev="$own"
-              [ "$stable" -ge 6 ] && { echo "settled: pid ${own}has owned UDP 7777 and answered for a minute"; docker exec "$cid" bash /healthcheck.sh 7777; exit 0; }
+              [ "$stable" -ge 6 ] && { echo "settled: pid ${own}has owned UDP 7777 and answered for a minute"; docker exec "$cid" bash /healthcheck.sh 7777; tests/secret-probe.sh check "after a restart"; exit $?; }
               sleep 10
             done
             echo "::error::the server never settled: the owner of UDP 7777 kept changing or the check kept failing"
@@ -186,9 +197,15 @@ jobs:
         # clusters (the server busy) can be told from scattered ones (a socket
         # or a rate), and the socket's drop counter says whether the kernel
         # discarded anything.
+        # Three ways: from 127.0.0.1, from the container's own address, and a
+        # burst. It found the newline byte that split a request (the tenth id,
+        # 0x..0a, lost in every run); with it gone, none should be lost.
         run: |
           cid="$($COMPOSE ps -q vein-server)"
-          docker exec -i "$cid" bash -s < tests/fixtures/challenge-timing.sh
+          me="$(docker inspect "$cid" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{ print $1 }')"
+          docker exec -i "$cid" bash -s 127.0.0.1 60 0.5 3 < tests/fixtures/challenge-timing.sh
+          docker exec -i "$cid" bash -s "$me" 60 0.5 3 < tests/fixtures/challenge-timing.sh | sed -E 's/to ([0-9]{1,3}[.]){3}[0-9]{1,3}/to the container address/'
+          docker exec -i "$cid" bash -s 127.0.0.1 40 0.05 3 < tests/fixtures/challenge-timing.sh
 
       - name: The refresh, on the real private server - nobody on
         # A private server never answers A2S, so with nobody joined since the
@@ -242,8 +259,12 @@ jobs:
           done
           echo "::error::the game did not answer again after SIGCONT"; exit 1
 
+      - name: The probe sees what it looks for - a canary in a log and on two command lines
+        run: tests/secret-probe.sh selftest
+
       - name: Stop
         if: always()
         run: |
           $COMPOSE down -t 60 >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/secret-probe.values" .env
           docker volume rm -f vein-server-data >/dev/null 2>&1 || true

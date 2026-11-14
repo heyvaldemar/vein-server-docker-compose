@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Security
+
+- **Passwords no longer show in `docker compose logs` or on the server's command line.** Up to v1.1.0 the image started the game with the join password and the admin password as arguments, and both reached `docker compose logs` (the engine prints its command line) and `ps` on the host. If you ever posted those logs, change both passwords.
+
+### Fixed
+
+- **About one health check in sixty-four no longer fails for nothing.** bash writes printf's output line by line, so a request whose random connection id held a newline byte (0x0a) went out as two datagrams shorter than the 512 bytes the server accepts, and all four tries of that check went unanswered. The id never holds one now. `tests/e2e-healthcheck.sh` runs two hundred checks in a row and needs every one healthy; v1.1.0's check fails it (2 of 200).
+- **The README no longer blames the server for a lost answer.** v1.1.0's README said the server leaves about one challenge in sixty unanswered. It did not: the check had sent that request as two datagrams, cut at a newline byte in its id. The line now says so.
+
+### Changed
+
+- **The server is started by `tools/start-server.sh`.** The image runs it as `START_COMMAND`. It writes the join password (`VEIN_SERVER_PASSWORD`) into `Game.ini`, where the game reads it, with bash builtins, and passes no password as an argument. A public server set up this way answers A2S with "password required" (CI run 43540804147).
+- **The admin password is optional, and admins by Steam id come first.** VEIN reads `VEIN_SERVER_ADMIN_PASSWORD` only from its command line: the engine reads no `UECommandLine.txt` in any of five places tried (run 43540804147). It is now empty by default, and the README recommends `VEIN_SERVER_ADMIN_STEAM_IDS` instead. Set, it is visible on the game's command line and in `Vein/Saved/Logs/Vein.log`, and the README says so.
+- **Everything the image prints passes a filter.** `Password=value` reads `Password=******` in `docker compose logs`, whatever printed it: the image's start line, its list of processes left behind after an exit, or the engine's own command line.
+- **Backups leave out `Vein/Saved/Logs`.** No restore needs the logs, and the engine writes its command line there.
+- **CI proves it on the real server.** `tests/secret-probe.sh` gives every password the compose file passes a random value and requires it in no `docker compose logs`, no command line in the containers, no `ps` on the host and no `Vein.log`, except the admin password where the README names it. It runs after the first start and again after a restart, and a self-test plants a canary in all three places and must find it. On v1.1.0 as released, the probe is red (run 43541457647: both passwords in the logs, the container's command lines and the host's `ps`).
 
 ## [1.1.0] - 2026-11-14
 

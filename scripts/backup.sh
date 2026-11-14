@@ -10,6 +10,10 @@
 # one; on the machine this template comes from, the first restore of a real
 # world did exactly that, and reported success.
 #
+# NOT THE LOGS. Vein/Saved/Logs is left out: no restore needs it, and the
+# engine writes its own command line there, the admin password with it when
+# one is set (README, "Admins").
+#
 # NO SAVE IS REQUESTED FIRST, AND WHY THAT IS SAFE. VEIN has no rcon, and the
 # image's own attempt writes to a terminal that is not there. What makes an
 # archive of a running server consistent is the game's autosave: every 60
@@ -70,7 +74,7 @@ NAME="$(basename "$BACKUP_FILE")"
 # Written as .partial; renamed only if tar succeeded and the archive holds
 # save files.
 if docker run --rm -v "$VOLUME":/data:ro -v "$OUT":/out alpine:3.20 \
-     tar -czf "/out/$NAME.partial" -C /data/Vein Saved; then
+     tar -czf "/out/$NAME.partial" -C /data/Vein --exclude=Saved/Logs Saved; then
   saves="$(docker run --rm -v "$OUT":/out:ro alpine:3.20 tar -tzf "/out/$NAME.partial" 2>/dev/null | grep -c '^Saved/SaveGames/.')"
   if [ "${saves:-0}" -lt 1 ]; then
     mv "${BACKUP_FILE}.partial" "${BACKUP_FILE}.failed" 2>/dev/null
