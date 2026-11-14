@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.2.0] - 2026-11-14
+
 ### Security
 
 - **Passwords no longer show in `docker compose logs` or on the server's command line.** Up to v1.1.0 the image started the game with the join password and the admin password as arguments, and both reached `docker compose logs` (the engine prints its command line) and `ps` on the host. If you ever posted those logs, change both passwords.
@@ -23,7 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Everything the image prints passes a filter.** `Password=value` reads `Password=******` in `docker compose logs`, a quoted value or one with escaped spaces included, whatever printed it: the image's start line, its list of processes left behind after an exit, or the engine's own command line.
 - **Backups leave out `Vein/Saved/Logs`.** No restore needs the logs, and the engine writes its command line there.
 - **CI proves it on the real server.** `tests/secret-probe.sh` gives every password the compose file passes a random value and requires it in no `docker compose logs`, no command line in the containers, no `ps` on the host and no `Vein.log`, except the admin password where the README names it. It runs after the first start and again after a restart, and a self-test plants a canary in all three places and must find it. On v1.1.0 as released, the probe is red (run 43541457647: both passwords in the logs, the container's command lines and the host's `ps`).
-
 ## [1.1.0] - 2026-11-14
 
 ### Fixed
@@ -75,7 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scripts/backup.sh` and `scripts/restore.sh`**: the world (`Vein/Saved`) archived without the game files, written as `.partial` until the archive is shown to hold save files; restored at the exact path the server reads, with the previous world moved aside and every save file checked at its live path. `tests/e2e-backup-restore.sh` proves it by path and by byte, and shows that the same archive extracted at the volume's root leaves no world where the server looks.
 - **`update.sh`**: moves between release tags, refuses to cross a major version unattended, refuses to run over local changes, names any new required variable before anything has moved.
 
-[Unreleased]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.1...v1.0.2
