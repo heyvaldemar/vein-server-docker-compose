@@ -76,7 +76,7 @@ scripts/restore.sh backups/vein-world-20261018-043000.tar.gz
 
 ## Testing
 
-`.github/workflows/real-server.yml` installs the game from Steam and boots it on every push, about 10 GB, as a private server, then: samples the health check while SteamCMD downloads and needs it red with nothing bound; waits for it to go green on the server's challenge reply, restarts it and waits again; asks thirty times in a row and needs no new line in the game's log and no file written; runs the refresh against the idle server and needs it to read nobody on; **stops the server** with SIGSTOP and needs the check red while the old `/proc` check stays green, and green again after SIGCONT.
+`.github/workflows/real-server.yml` installs the game from Steam and boots it on every push, about 10 GB, as a private server, then: samples the health check while SteamCMD downloads and needs it red with nothing bound; waits for it to go green on the server's challenge reply, restarts it and waits again; asks thirty times in a row and needs never three failures running (what Docker would call unhealthy), every failure counted, no new line in the game's log and no file written; runs the refresh against the idle server and needs it to read nobody on; **stops the server** with SIGSTOP and needs the check red while the old `/proc` check stays green, and green again after SIGCONT.
 
 Without a game:
 

@@ -142,32 +142,53 @@ jobs:
           docker exec "$cid" cat /proc/net/udp /proc/net/udp6
           exit 1
 
-      - name: Thirty checks in a row add no line to the game's log and write no file
-        # A check that leaves a trace on every run is a check that fills a log
-        # or a disk over months. The challenge opens nothing on the server
-        # (no state until a ConnectRequest, which the check never sends); this
-        # is the measurement. A file written in the window may be the game's
-        # own autosave, so a window that wrote one is measured again. Thirty
-        # checks in about ten seconds is far beyond Docker's one every 30
-        # seconds with three retries; one of thirty went unanswered in run
-        # 43540074201, so most, not all, must be answered.
+      - name: Thirty checks in a row - never three misses running, and no trace on the server
+        # Docker calls the check every 30 seconds and marks the container
+        # unhealthy after three failures in a row (retries: 3), so that is the
+        # condition: among thirty calls, no run of three failures. Every
+        # failure is counted and printed, with the call's duration and the
+        # game port's socket (receive queue, drops), so a loss is seen, not
+        # absorbed. A check that leaves a trace on every run is a check that
+        # fills a log or a disk over months: the game's log must not grow and
+        # no file may be written under Vein/Saved (a window that wrote one is
+        # measured again, in case it was the game's own autosave).
         run: |
           cid="$($COMPOSE ps -q vein-server)"
           L=/home/steam/vein/Vein/Saved/Logs/Vein.log
+          sock() { docker exec "$cid" sh -c "awk '\$2 ~ /:1E61\$/ { print \"rx_queue \" substr(\$5, index(\$5, \":\") + 1) \" drops \" \$13 }' /proc/net/udp /proc/net/udp6" | head -1; }
           for attempt in 1 2; do
             before="$(docker exec "$cid" sh -c "wc -l < $L")"
             docker exec "$cid" sh -c 'touch /tmp/hc-mark'
-            ok=0
-            for _ in $(seq 1 30); do docker exec "$cid" bash /healthcheck.sh 7777 >/dev/null 2>&1 && ok=$((ok + 1)); done
+            pattern=""; fails=0
+            echo "socket before: $(sock)"
+            for k in $(seq 1 30); do
+              t0=$(date +%s%N)
+              if out="$(docker exec "$cid" bash /healthcheck.sh 7777 2>&1)"; then
+                pattern+="+"
+              else
+                pattern+="x"; fails=$((fails + 1))
+                echo "call $k failed after $(( ($(date +%s%N) - t0) / 1000000 )) ms at $(date -u +%T): $out; socket: $(sock)"
+              fi
+            done
             after="$(docker exec "$cid" sh -c "wc -l < $L")"
             files="$(docker exec "$cid" sh -c 'find /home/steam/vein/Vein/Saved -type f -newer /tmp/hc-mark | wc -l')"
-            echo "attempt $attempt: $ok of 30 checks healthy; Vein.log $before -> $after lines; files written under Vein/Saved: $files"
-            [ "$ok" -ge 27 ] || { echo "::error::only $ok of 30 checks were healthy"; exit 1; }
+            echo "attempt $attempt: $pattern  failures: $fails of 30; socket after: $(sock); Vein.log $before -> $after lines; files written under Vein/Saved: $files"
+            [[ $pattern != *xxx* ]] || { echo "::error::three failures in a row: Docker would mark the server unhealthy"; exit 1; }
             [ "$after" = "$before" ] || { echo "::error::the checks added lines to the game's log:"; docker exec "$cid" sh -c "tail -n $((after - before)) $L" | sed -E 's/7656[0-9]{13}/<steamid>/g; s/([0-9]{1,3}[.]){3}[0-9]{1,3}/<ip>/g'; exit 1; }
             [ "$files" = 0 ] && exit 0
             echo "a file was written in the window; measuring once more, in case it was the autosave"
           done
           echo "::error::files were written under Vein/Saved in both windows"; exit 1
+
+      - name: Measure - sixty challenges half a second apart, each one timed
+        # Not a pass or fail: what a loss looks like. One request per line,
+        # its round trip or "lost" after 3 seconds, so losses that come in
+        # clusters (the server busy) can be told from scattered ones (a socket
+        # or a rate), and the socket's drop counter says whether the kernel
+        # discarded anything.
+        run: |
+          cid="$($COMPOSE ps -q vein-server)"
+          docker exec -i "$cid" bash -s < tests/fixtures/challenge-timing.sh
 
       - name: The refresh, on the real private server - nobody on
         # A private server never answers A2S, so with nobody joined since the
