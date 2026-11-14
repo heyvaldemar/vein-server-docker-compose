@@ -24,6 +24,12 @@ ini="$dir/Vein/Saved/Config/LinuxServer/Game.ini"
 sec='[/Script/Vein.VeinGameSession]'
 pw="${VEIN_JOIN_PASSWORD:-}"
 
+# FAIL CLOSED. A join password that cannot be written would start an open
+# server, so with one set, a missing Game.ini is created, and the start stops
+# unless the file holds the password afterwards.
+if [ -n "$pw" ] && [ ! -f "$ini" ]; then
+  mkdir -p "${ini%/*}" && printf '%s\n' "$sec" > "$ini"
+fi
 if [ -f "$ini" ]; then
   out=""; in=0; put=0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -39,9 +45,28 @@ if [ -f "$ini" ]; then
   done < "$ini"
   [ -n "$pw" ] && [ "$put" = 0 ] && out+="$sec"$'\n'"Password=$pw"$'\n'
   printf '%s' "$out" > "$ini.new" && cat "$ini.new" > "$ini" && rm -f "$ini.new"
-  if [ -n "$pw" ]; then echo "start-server: the join password is in Game.ini"; else echo "start-server: no join password"; fi
+fi
+if [ -n "$pw" ]; then
+  have=0
+  if [ -f "$ini" ]; then
+    in=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      l=${line%$'\r'}
+      if [[ $l == \[*\] ]]; then in=0; [ "$l" = "$sec" ] && in=1; continue; fi
+      [ "$in" = 1 ] && [ "$l" = "Password=$pw" ] && have=1
+    done < "$ini"
+  fi
+  [ "$have" = 1 ] || { echo "start-server: the join password could not be written to Game.ini; not starting an open server" >&2; exit 1; }
+  echo "start-server: the join password is in Game.ini"
 else
-  echo "start-server: no Game.ini at $ini; the join password cannot be set this start" >&2
+  echo "start-server: no join password"
+fi
+
+# THE ADMIN PASSWORD, letters and digits only, so that the log filter, which
+# masks Password=value up to the next space, always covers all of it.
+if [ -n "${VEIN_ADMIN_PASSWORD:-}" ] && [[ ! $VEIN_ADMIN_PASSWORD =~ ^[A-Za-z0-9]+$ ]]; then
+  echo "start-server: VEIN_SERVER_ADMIN_PASSWORD must be letters and digits only (see .env.example); not starting" >&2
+  exit 1
 fi
 
 args=(

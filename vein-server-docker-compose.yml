@@ -20,13 +20,14 @@ services:
     # the server exits, the command lines of processes left behind, and the
     # engine writes its own command line to stdout ("LogInit: Command Line:").
     # Everything the image prints passes through sed on its way to
-    # `docker compose logs`, and any Password=value there reads Password=******.
+    # `docker compose logs`, and any Password=value there reads Password=******,
+    # a quoted value and one with escaped spaces included.
     # The pattern is in the filter, the value is not, so it is on no command
     # line. tests/secret-probe.sh proves no value reaches the logs.
     entrypoint:
       - /bin/bash
       - -c
-      - exec /entrypoint.sh > >(exec sed -u -E 's/(Password=)[^ "]*/\1******/Ig') 2>&1
+      - exec /entrypoint.sh > >(exec sed -u -E 's/(Password=)("[^"]*"|(\\.|[^[:space:]\\])*)/\1******/Ig') 2>&1
     # Handles untrusted input from the internet and cannot gain privileges
     # through a setuid binary. Here that also matters for a second reason: the
     # image gives its steam user passwordless sudo, and with no-new-privileges
