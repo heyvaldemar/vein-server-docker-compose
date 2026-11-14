@@ -32,6 +32,16 @@
 # know (a game update can change it), and reading that as zero would restart
 # the server under them. So that case is "?", like a silent server.
 #
+# A PRIVATE SERVER NEVER ANSWERS A2S. VEIN answers the Steam query only as a
+# public server; private, the template's default, the query port is bound and
+# silent (measured in CI on 2026-11-14). So for a server with a log that shows
+# no join since it started and no Steam answer, the second witness is its game
+# port: a helper in its network namespace counts the UDP packets that reach
+# that port for 10 seconds. A player on the server sends a steady stream of
+# them; none at all, with no join in the log, is nobody on. Any traffic is
+# "?": someone may be on, joined in a shape the parser does not know. Up to
+# v1.0.3 an idle private server read "?" and never updated itself.
+#
 # AN UNANSWERED PLAYER QUERY IS NOT AN EMPTY SERVER. A2S is asked on the query
 # port, from inside the server's network namespace, three times. With no log
 # either, a server that never answers is "?" and is skipped like an occupied
@@ -44,6 +54,7 @@
 #   VEIN_PROJECT        the compose project   (default vein)
 #   VEIN_REMOTE_BUILD   Steam's build, if known another way; set but empty
 #                       means "could not be read" (tests use both)
+#   VEIN_TRAFFIC_SECONDS  how long the game port is watched (default 10)
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
@@ -65,6 +76,9 @@ MANIFEST="/home/steam/vein/steamapps/appmanifest_$APP.acf"
 LOG="/home/steam/vein/Vein/Saved/Logs/Vein.log"
 QPORT="$(grep -E '^VEIN_SERVER_QUERY_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2-)"
 QPORT="${QPORT:-27015}"
+GPORT="$(grep -E '^VEIN_SERVER_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2-)"
+GPORT="${GPORT:-7777}"
+TSECS="${VEIN_TRAFFIC_SECONDS:-10}"
 say() { echo "$(date '+%F %T') $*"; }
 
 cid="$(docker compose -p "$PROJECT" ps -q --status running vein-server 2>/dev/null || true)"
@@ -171,8 +185,51 @@ else:
     print("?")
 ' 2>/dev/null || echo "?")"
 case "$a2s" in ''|*[!0-9]*) a2s="?" ;; esac
+
+# The game port's traffic, asked only when the log shows no join and Steam
+# gave no answer: the packets that reach the port in TSECS seconds, counted
+# from a raw socket in the server's network namespace (NET_RAW and nothing
+# else). Our own packets going out are not counted. "?" when it cannot be read.
+traffic=""
+if [ "$from_log" != "?" ] && [ "$joins_seen" = 0 ] && [ "$a2s" = "?" ]; then
+  traffic="$(PORT="$GPORT" SECS="$TSECS" docker run --rm --network "container:$cid" --cap-drop ALL --cap-add NET_RAW \
+      --security-opt no-new-privileges:true -e PORT -e SECS python:3.13-alpine python3 -c '
+import os, socket, struct, time
+port, secs = int(os.environ["PORT"]), float(os.environ["SECS"])
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(3)); s.settimeout(0.5)
+n, end = 0, time.monotonic() + secs
+while time.monotonic() < end:
+    try:
+        d, a = s.recvfrom(65535)
+    except socket.timeout:
+        continue
+    if a[2] == socket.PACKET_OUTGOING or len(d) < 14:
+        continue
+    t = struct.unpack("!H", d[12:14])[0]
+    if t == 0x0800 and len(d) >= 34 and d[23] == 17:
+        o = 14 + (d[14] & 0x0F) * 4
+    elif t == 0x86DD and len(d) >= 58 and d[20] == 17:
+        o = 54
+    else:
+        continue
+    if len(d) >= o + 4 and struct.unpack("!H", d[o + 2:o + 4])[0] == port:
+        n += 1
+print(n)
+' 2>/dev/null || echo "?")"
+  case "$traffic" in ''|*[!0-9]*) traffic="?" ;; esac
+fi
+
 players="$a2s"
-if [ "$from_log" != "?" ] && [ "$joins_seen" = 0 ] && [ "$a2s" != "0" ]; then
+why="the server did not answer the player query three times, so nobody can say who is on"
+if [ "$from_log" != "?" ] && [ "$joins_seen" = 0 ] && [ "$a2s" = "?" ] && [ "$traffic" = 0 ]; then
+  # A private server, or a public one that stopped answering: no join since
+  # it started, and nobody sending anything to the port players join on.
+  players=0
+  say "no join in the server's log since it started, no answer to the Steam query (a private server never gives one), and no packet reached the game port in ${TSECS}s: nobody is on"
+elif [ "$from_log" != "?" ] && [ "$joins_seen" = 0 ] && [ "$a2s" = "?" ]; then
+  players="?"
+  why="the server's log shows no joins at all, it gives no Steam answer, and the game port saw ${traffic} packet(s) in ${TSECS}s: someone may be on, joined in a shape the parser does not know, so nobody can say who is on"
+elif [ "$from_log" != "?" ] && [ "$joins_seen" = 0 ] && [ "$a2s" != "0" ]; then
   # No join in a shape the parser knows: an empty log on a server Steam calls
   # empty is empty; anything else cannot be told apart from a format change.
   players="?"
@@ -183,7 +240,7 @@ elif [ "$from_log" != "?" ]; then
     && say "the server's log has $from_log player(s) on, its Steam answer says $a2s; the log is believed (VEIN keeps players who left in that answer)"
 fi
 if [ "$players" = "?" ] && [ "$FORCE" != "true" ]; then
-  say "behind ($installed -> $latest), and the server did not answer the player query three times, so nobody can say who is on; not restarting. --force restarts anyway" >&2
+  say "behind ($installed -> $latest), and $why; not restarting. --force restarts anyway" >&2
   exit 1
 fi
 if [ "$players" != "?" ] && [ "$players" -gt 0 ] && [ "$FORCE" != "true" ]; then

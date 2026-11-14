@@ -13,6 +13,9 @@
 # from the server's log when there is one; with no log, from A2S, which can
 # only count too many. Cases 9 to 11 hold the script to that.
 #
+# A private server never answers A2S; with no join in its log, the packets
+# that reach its game port decide. Cases 14 to 16 hold the script to that.
+#
 # No game download and no Steam: the "server" is a few lines of Python that
 # write an app manifest with a chosen build, optionally a Vein.log, and answer
 # A2S_INFO with a chosen player count, behind the challenge or not, or not at
@@ -42,12 +45,25 @@ services:
       MODE: ${MODE:-unset}
       BUILD: ${BUILD:-0}
       LOG: ${LOG:-}
+      TRAFFIC: ${TRAFFIC:-}
     command:
       - python3
       - -c
       - |
-        import os, socket, struct
+        import os, socket, struct, threading, time
         mode, build = os.environ["MODE"], os.environ["BUILD"]
+        # The game port, bound as the game binds it. With TRAFFIC set, a
+        # "player" in the same namespace sends to it ten times a second.
+        g = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        g.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        g.bind(("::", 7777))
+        def player():
+            c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            while True:
+                c.sendto(b"\x00" * 64, ("127.0.0.1", 7777))
+                time.sleep(0.1)
+        if os.environ["TRAFFIC"]:
+            threading.Thread(target=player, daemon=True).start()
         os.makedirs("/home/steam/vein/steamapps", exist_ok=True)
         open("/home/steam/vein/steamapps/appmanifest_2131400.acf", "w").write(
             '"AppState"\n{\n\t"appid"\t\t"2131400"\n\t"buildid"\t\t"%s"\n}\n' % build)
@@ -71,13 +87,17 @@ services:
             s.sendto(b"\xff\xff\xff\xff" + body, a)
 YAML
 
-# start MODE BUILD [LOG]: a stand-in of its own per case; LOG is Vein.log's
-# lines joined by "|". Sets $p rather than
-# printing it, so the project reaches PROJECTS and the cleanup.
+# start MODE BUILD [LOG [TRAFFIC]]: a stand-in of its own per case; LOG is
+# Vein.log's lines joined by "|", TRAFFIC non-empty sends to the game port.
+# Sets $p rather than printing it, so the project reaches PROJECTS and the
+# cleanup. The previous case's stand-in goes first: each case makes its own
+# network, and a host runs out of address pools long before it runs out of
+# cases.
 start() {
+  [ -n "${p:-}" ] && docker compose -p "$p" -f "$WORK/fixture.yml" down -t 1 >/dev/null 2>&1
   p="vein-refresh-$$-${#PROJECTS[@]}"
   PROJECTS+=("$p")
-  MODE="$1" BUILD="$2" LOG="${3:-}" docker compose -p "$p" -f "$WORK/fixture.yml" up -d >/dev/null 2>&1 || { echo "cannot start the stand-in"; exit 1; }
+  MODE="$1" BUILD="$2" LOG="${3:-}" TRAFFIC="${4:-}" docker compose -p "$p" -f "$WORK/fixture.yml" up -d >"$WORK/up.log" 2>&1 || { echo "cannot start the stand-in:"; cat "$WORK/up.log"; exit 1; }
   # 27015 is 0x6987 in /proc/net/udp. Ready means listening and the manifest
   # written; the stand-in answers nothing until it is asked.
   for _ in $(seq 1 40); do
@@ -193,6 +213,34 @@ start players:0 100 " "
 out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
 if [ "$rc" = 0 ] && grep -q "would restart to update (100 -> 101): players online: 0" <<<"$out"; then pass "no joins in the log, Steam says 0: empty, it would restart"; else fail "no joins, Steam says 0: exit $rc, said: $out"; fi
 
+# A PRIVATE SERVER, the template's default, never answers A2S. Its log after
+# a start with nobody joined: the server's own lines, no join.
+S1='[2026.11.14-00.56.24:232][  0]LogRamjetNetworking: Name:GameNetDriver Def:GameNetDriver RamjetSteamNetDriver_2147482451 started listening on 7777'
+S2='[2026.11.14-00.56.25:493][  0]LogRamjetNetworking: S_OnSteamServersConnected'
+export VEIN_TRAFFIC_SECONDS=3
+
+# 14. THE IDLE PRIVATE SERVER. Nobody has joined since the start, Steam's
+# query goes unanswered as it always does on a private server, and nothing
+# reaches the game port. Nobody is on: it would restart. Up to v1.0.3 this
+# read "?" and the server never updated itself.
+start silent 100 "$S1|$S2"
+out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && grep -q "no packet reached the game port in 3s: nobody is on" <<<"$out" && grep -q "would restart to update (100 -> 101): players online: 0" <<<"$out"; then pass "private, nobody joined, no traffic: nobody on, it would restart"; else fail "private, nobody joined, no traffic: exit $rc, said: $out"; fi
+
+# 15. The same server with someone sending to its game port: the log shows no
+# join, but somebody is talking to the server. Unknown, not zero: wait, exit 1.
+start silent 100 "$S1|$S2" traffic; before="$(started "$p")"
+out="$(VEIN_REMOTE_BUILD=101 refresh 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && grep -q "someone may be on" <<<"$out"; then pass "private, no join in the log, traffic on the game port: unknown, waits, exit 1"; else fail "private, traffic on the game port: exit $rc, said: $out"; fi
+if [ "$(started "$p")" = "$before" ]; then pass "private, traffic on the game port: not restarted"; else fail "private, traffic on the game port: restarted"; fi
+
+# 16. THE FORMAT CHANGED, on a private server: two players joined in a shape
+# the parser has never seen, and they are on, sending. No A2S to catch it; the
+# game port does.
+start silent 100 "$S1|$S2|$U1|$U2" traffic
+out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && grep -q "someone may be on" <<<"$out"; then pass "private, joins in an unknown format, traffic: unknown, not zero"; else fail "private, unknown format, traffic: exit $rc, said: $out"; fi
+
 # DOCKER FAILING ON THE WAY. When an exec fails, Docker can print its error
 # where the program's output goes: "cannot exec in a stopped state" on stdout
 # with exit 128 when the container stops under it, or part of the output and
@@ -214,7 +262,7 @@ SH
 chmod +x "$WORK/bin/docker"
 broken() { PATH="$WORK/bin:$PATH" REAL_DOCKER="$REAL_DOCKER" BREAK="$1" KEEP="${2:-0}" refresh "${@:3}"; }
 
-# 14. The log read is cut off after the first player left and before the
+# 17. The log read is cut off after the first player left and before the
 # second joined. The second player is on, and Steam's answer says so. Counted
 # from the part that arrived, the log shows nobody; this used to end in
 # "no joins at all" and the log's format taking the blame.
@@ -223,7 +271,7 @@ out="$(VEIN_REMOTE_BUILD=101 broken log 3 2>&1)"; rc=$?
 if [ "$rc" = 0 ] && grep -q "could not be read whole (docker exec ended with 137)" <<<"$out" && grep -q "but 1 player(s) are on" <<<"$out"; then pass "log read cut off: Steam's answer decides, one player on, waits"; else fail "log read cut off: exit $rc, said: $out"; fi
 if [ "$(started "$p")" = "$before" ]; then pass "log read cut off: not restarted"; else fail "log read cut off: restarted"; fi
 
-# 15. The installed build read fails, and Docker's message comes back where the
+# 18. The installed build read fails, and Docker's message comes back where the
 # number would be. It is not a build: nothing is decided.
 start players:0 100
 out="$(VEIN_REMOTE_BUILD=101 broken build 0 --dry-run 2>&1)"; rc=$?

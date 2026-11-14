@@ -27,18 +27,20 @@ jobs:
   game:
     name: The real server, and the health check asking it
     # The game is about 10 GB, small enough for every push. It is installed
-    # the way a first start does, and the health check is proven against it
-    # both ways: red while SteamCMD downloads and nothing is bound, green once
-    # the server answers A2S_INFO, red with the server stopped by SIGSTOP
-    # while the old /proc check stays green, green again after SIGCONT.
-    # NOT GREEN YET, AND WHY. The server binds its query port and, in CI,
-    # never answers it: the socket fills unread and its log says
-    # SteamAPI_Init had not succeeded. Measured on both the ubuntu-26.04 and
-    # the ubuntu-24.04 runner (runs 42525260670, 42527881043), after the
-    # image's config run and after a restart. CS2 in its template stopped
-    # logging into Steam from CI with a placeholder token the same day. The
-    # health check is red because the server does not answer the Steam
-    # query, which is what a server browser asks.
+    # the way a first start does, as a private server (the template's
+    # default), and the health check is proven against it both ways: red
+    # while SteamCMD downloads and nothing is bound, green once the server
+    # answers a SteamNetworkingSockets challenge on its game port, before and
+    # after a restart, red with the server stopped by SIGSTOP while the old
+    # /proc check stays green, green again after SIGCONT. Thirty checks in a
+    # row add no line to the game's log and write no file. Then the refresh
+    # decides on the real private server, as nobody on.
+    # WHY THE GAME PORT. A private VEIN server binds the query port and never
+    # answers A2S (runs 42525260670, 43531304566); a public one does (run
+    # 43534866273). A private one answers the challenge (run 43537003669).
+    # A Steam game server login token changed nothing: VEIN does not read one
+    # (run 43527059309: no "setsteamaccount" in the binary, an anonymous
+    # server SteamID with the token on its command line).
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -74,21 +76,11 @@ jobs:
           sudo systemctl restart docker
 
       - name: First start - the game is downloaded into the volume
-        env:
-          STEAM_GSLT: ${{ secrets.VEIN_CI_STEAM_GSLT }}
         run: |
           cp .env.example .env
-          sed -i "s/^VEIN_SERVER_ADMIN_PASSWORD=.*/VEIN_SERVER_ADMIN_PASSWORD=$(openssl rand -hex 16)/" .env
-          # A game server login token from the repository secret, when it
-          # exists, into .env through awk's environment, never a command line
-          # here. (The image itself passes it to the server as
-          # +sv_setsteamaccount, on the server's command line.)
-          if [ -n "$STEAM_GSLT" ]; then
-            awk '!/^#? *VEIN_SERVER_STEAM_GSLT=/ { print } END { print "VEIN_SERVER_STEAM_GSLT=" ENVIRON["STEAM_GSLT"] }' .env > .env.new && mv .env.new .env
-            echo "a game server login token from the repository secret"
-          else
-            echo "::warning::no VEIN_CI_STEAM_GSLT secret: no token, and in CI the server has not answered the Steam query without one"
-          fi
+          pw="$(openssl rand -hex 16)"; echo "::add-mask::$pw"
+          sed -i "s/^VEIN_SERVER_ADMIN_PASSWORD=.*/VEIN_SERVER_ADMIN_PASSWORD=$pw/" .env
+          grep "^VEIN_SERVER_PUBLIC=false$" .env
           docker volume create vein-server-data >/dev/null
           $COMPOSE up -d
 
@@ -100,17 +92,17 @@ jobs:
             echo "the game is already running 45 s in; the download stage was too short to sample"
             exit 0
           fi
-          n=0; out="$(docker exec "$cid" bash /healthcheck.sh 27015 2>&1)" || n=$?
+          n=0; out="$(docker exec "$cid" bash /healthcheck.sh 7777 2>&1)" || n=$?
           echo "45 s in, before the game runs: the check exits $n: $out"
           [ "$n" = 1 ] || { echo "::error::the check was not red before the game ran"; exit 1; }
 
       - name: Wait for the health check to go green, and the real server to settle
         # ON A FIRST START THE IMAGE RUNS THE SERVER TWICE. It starts it for up
         # to 30 seconds to generate its config, kills it, and starts it again.
-        # The first instance answers A2S too, so Docker can read healthy before
-        # the real start, and the real one did not answer at all in CI. So:
-        # healthy once, then one restart (no config run), then settled: for a
-        # minute, the same process owns the query port and the check is green.
+        # The first instance answers too, so Docker can read healthy before
+        # the real start. So: healthy once, then one restart (no config run,
+        # as on every start after the first), then settled: for a minute, the
+        # same process owns the game port and the check is green.
         run: |
           cid="$($COMPOSE ps -q vein-server)"
           s=none
@@ -122,26 +114,24 @@ jobs:
           done
           echo "health: $s"
           if [ "$s" = healthy ]; then
-            # The real server that follows the config run did not answer A2S in
-            # CI: its query socket filled unread and its log said SteamAPI_Init
-            # had not succeeded. A second start skips the config run, as every
-            # start after the first does; restart once, then wait.
+            # The proof covers a restart too: a second start skips the config
+            # run, as every start after the first does.
             sleep 60
             $COMPOSE restart vein-server >/dev/null
             echo "restarted once after the first start"
             prev=""; stable=0
             for _ in $(seq 1 90); do
-              own="$(docker exec -i "$cid" sh -s 27015 < tests/fixtures/port-owner.sh 2>/dev/null | awk '{ print $1 }' | tr '\n' ' ')"
-              if [ -n "$own" ] && [ "$own" = "$prev" ] && docker exec "$cid" bash /healthcheck.sh 27015 >/dev/null 2>&1; then
+              own="$(docker exec -i "$cid" sh -s 7777 < tests/fixtures/port-owner.sh 2>/dev/null | awk '{ print $1 }' | tr '\n' ' ')"
+              if [ -n "$own" ] && [ "$own" = "$prev" ] && docker exec "$cid" bash /healthcheck.sh 7777 >/dev/null 2>&1; then
                 stable=$((stable + 1))
               else
                 stable=0
               fi
               prev="$own"
-              [ "$stable" -ge 6 ] && { echo "settled: pid ${own}has owned UDP 27015 and answered for a minute"; docker exec "$cid" bash /healthcheck.sh 27015; exit 0; }
+              [ "$stable" -ge 6 ] && { echo "settled: pid ${own}has owned UDP 7777 and answered for a minute"; docker exec "$cid" bash /healthcheck.sh 7777; exit 0; }
               sleep 10
             done
-            echo "::error::the server never settled: the owner of UDP 27015 kept changing or the check kept failing"
+            echo "::error::the server never settled: the owner of UDP 7777 kept changing or the check kept failing"
           else
             echo "::error::the server never reported healthy"
           fi
@@ -149,12 +139,51 @@ jobs:
           echo "--- the health check's own words, last runs"
           docker inspect "$cid" --format '{{range .State.Health.Log}}exit {{.ExitCode}}: {{.Output}}{{end}}' | tail -c 2000
           echo "--- UDP sockets in the container"
-          docker exec "$cid" cat /proc/net/udp
+          docker exec "$cid" cat /proc/net/udp /proc/net/udp6
           exit 1
+
+      - name: Thirty checks in a row add no line to the game's log and write no file
+        # A check that leaves a trace on every run is a check that fills a log
+        # or a disk over months. The challenge opens nothing on the server
+        # (no state until a ConnectRequest, which the check never sends); this
+        # is the measurement. A file written in the window may be the game's
+        # own autosave, so a window that wrote one is measured again.
+        run: |
+          cid="$($COMPOSE ps -q vein-server)"
+          L=/home/steam/vein/Vein/Saved/Logs/Vein.log
+          for attempt in 1 2; do
+            before="$(docker exec "$cid" sh -c "wc -l < $L")"
+            docker exec "$cid" sh -c 'touch /tmp/hc-mark'
+            ok=0
+            for _ in $(seq 1 30); do docker exec "$cid" bash /healthcheck.sh 7777 >/dev/null 2>&1 && ok=$((ok + 1)); done
+            after="$(docker exec "$cid" sh -c "wc -l < $L")"
+            files="$(docker exec "$cid" sh -c 'find /home/steam/vein/Vein/Saved -type f -newer /tmp/hc-mark | wc -l')"
+            echo "attempt $attempt: $ok of 30 checks healthy; Vein.log $before -> $after lines; files written under Vein/Saved: $files"
+            [ "$ok" = 30 ] || { echo "::error::not every check was healthy"; exit 1; }
+            [ "$after" = "$before" ] || { echo "::error::the checks added lines to the game's log:"; docker exec "$cid" sh -c "tail -n $((after - before)) $L" | sed -E 's/7656[0-9]{13}/<steamid>/g; s/([0-9]{1,3}[.]){3}[0-9]{1,3}/<ip>/g'; exit 1; }
+            [ "$files" = 0 ] && exit 0
+            echo "a file was written in the window; measuring once more, in case it was the autosave"
+          done
+          echo "::error::files were written under Vein/Saved in both windows"; exit 1
+
+      - name: The refresh, on the real private server - nobody on
+        # A private server never answers A2S, so with nobody joined since the
+        # start the log alone cannot say the server is empty; the game port's
+        # traffic is the second witness (scripts/refresh.sh). Steam's build is
+        # given as one past the installed one, so the refresh has a reason to
+        # decide, and --dry-run keeps it from restarting.
+        run: |
+          cid="$($COMPOSE ps -q vein-server)"
+          b="$(docker exec "$cid" sh -c "grep -oE '\"buildid\"[[:space:]]+\"[0-9]+\"' /home/steam/vein/steamapps/appmanifest_2131400.acf | grep -oE '[0-9]+' | head -1")"
+          out="$(VEIN_REMOTE_BUILD=$((b + 1)) scripts/refresh.sh --dry-run 2>&1)"; rc=$?
+          echo "$out" | sed -E 's/7656[0-9]{13}/<steamid>/g'
+          if [ "$rc" != 0 ] || ! grep -q "would restart to update ($b -> $((b + 1))): players online: 0" <<<"$out"; then
+            echo "::error::the refresh did not read the idle private server as empty"; exit 1
+          fi
 
       - name: Plant - the process that answers, stopped, keeps the old check green and turns this one red
         # The check up to v1.0.3 was VeinServer in /proc. SIGSTOP on the process that
-        # owns the port's UDP socket (tests/fixtures/port-owner.sh; a name match
+        # owns the game port's UDP socket (tests/fixtures/port-owner.sh; a name match
         # is not enough, LinuxGSM's tmux carries the game's name and stopping it
         # stops nothing that answers) leaves every process there and nothing
         # answering: the old check must still pass and this one fail; after
@@ -165,24 +194,24 @@ jobs:
           uids="$(docker exec "$cid" sh -c 'cat /proc/[0-9]*/status 2>/dev/null' | awk '/^Uid:/ { print $2 }' | sort -u)"
           own=""; as=""
           for u in $uids; do
-            own="$(docker exec -u "$u" -i "$cid" sh -s 27015 < tests/fixtures/port-owner.sh 2>/dev/null)" && { as="$u"; break; }
+            own="$(docker exec -u "$u" -i "$cid" sh -s 7777 < tests/fixtures/port-owner.sh 2>/dev/null)" && { as="$u"; break; }
           done
-          [ -n "$own" ] || { echo "::error::no user in the container can see who owns UDP 27015"; docker exec "$cid" cat /proc/net/udp; exit 1; }
-          echo "UDP 27015 is owned by (pid uid comm), as seen by uid $as:"; echo "$own"
+          [ -n "$own" ] || { echo "::error::no user in the container can see who owns UDP 7777"; docker exec "$cid" cat /proc/net/udp /proc/net/udp6; exit 1; }
+          echo "UDP 7777 is owned by (pid uid comm), as seen by uid $as:"; echo "$own"
           pids="$(awk '{ print $1 }' <<<"$own" | tr '\n' ' ')"
           docker exec -u "$as" "$cid" sh -c "kill -STOP $pids"
           st="$(docker exec "$cid" sh -c "for p in $pids; do cut -d' ' -f3 /proc/\$p/stat; done" | tr '\n' ' ')"
           o=0; docker exec "$cid" sh -c "grep -qs '^VeinServer' /proc/[0-9]*/comm" || o=$?
-          n=0; out="$(docker exec "$cid" bash /healthcheck.sh 27015 2>&1)" || n=$?
+          n=0; out="$(docker exec "$cid" bash /healthcheck.sh 7777 2>&1)" || n=$?
           if [ "$n" = 0 ]; then
             echo "--- the check stayed green with the owners stopped; who answered:"
-            docker exec -i "$cid" sh -s 27015 < tests/fixtures/udp-diag.sh || true
+            docker exec -i "$cid" sh -s 7777 < tests/fixtures/udp-diag.sh || true
           fi
           docker exec -u "$as" "$cid" sh -c "kill -CONT $pids"
           echo "owners stopped (states: $st): the old check exits $o, the new one $n: $out"
           [ "$o" = 0 ] && [ "$n" = 1 ] || { echo "::error::expected the old check to pass (0) and the new one to fail (1)"; exit 1; }
           for _ in $(seq 1 30); do
-            docker exec "$cid" bash /healthcheck.sh 27015 && exit 0
+            docker exec "$cid" bash /healthcheck.sh 7777 && exit 0
             sleep 2
           done
           echo "::error::the game did not answer again after SIGCONT"; exit 1

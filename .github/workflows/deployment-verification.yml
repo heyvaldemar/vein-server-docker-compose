@@ -110,17 +110,21 @@ jobs:
             update.sh scripts/*.sh tests/*.sh
 
       - name: The health check goes by the game's answer, in the pinned image
-        # tools/healthcheck.sh is healthy only on the server's reply to
-        # A2S_INFO. Run in the pinned image, so its tools are proven there,
-        # against a stand-in that answers, answers after a challenge, stays
-        # silent, or is not there at all (tests/fixtures/fake-a2s.py). The real
-        # server is .github/workflows/real-server.yml.
+        # tools/healthcheck.sh is healthy only on the server's reply to a
+        # SteamNetworkingSockets challenge on the game port, carrying back the
+        # check's own connection id. Run in the pinned image, so its tools are
+        # proven there, against a stand-in that keeps the real server's rules
+        # and answers, answers with another id, stays silent, or is not there
+        # at all (tests/fixtures/fake-gns.py). The real server is
+        # .github/workflows/real-server.yml.
         run: ./tests/e2e-healthcheck.sh
 
       - name: The refresh restarts only an empty server that is behind
         # A stand-in writes an app manifest and answers A2S with players,
-        # behind the challenge, with nobody, or not at all. Players on and
-        # silence must both leave it untouched, and silence must exit 1.
+        # behind the challenge, with nobody, or not at all, and can send
+        # traffic to its game port. Players on and silence must both leave it
+        # untouched, and silence must exit 1, except a private server's: no
+        # join in its log and no traffic on its game port is nobody on.
         run: ./tests/e2e-refresh.sh
 
       - name: A world goes out and comes back to the path the server reads

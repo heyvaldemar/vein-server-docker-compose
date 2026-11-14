@@ -1,27 +1,30 @@
 #!/bin/bash
 # Does the health check go by the game's own answer, run in the pinned image?
 #
-# tools/healthcheck.sh sends A2S_INFO, the engine's server query, to the game
-# port and is healthy only on the engine's reply. Here it runs in the image
-# the compose file pins, so bash, timeout, head, od and tr are proven to be
-# there, against a stand-in that speaks just enough A2S
-# (tests/fixtures/fake-a2s.py), in the stand-in's network namespace:
+# tools/healthcheck.sh sends a SteamNetworkingSockets ChallengeRequest, the
+# first packet a client sends, to the game port and is healthy only on the
+# server's ChallengeReply carrying back its connection id. Here it runs in the
+# image the compose file pins, so bash, timeout, head, od and tr are proven to
+# be there, against a stand-in that keeps the real server's rules
+# (tests/fixtures/fake-gns.py: id 32, padded to 512 bytes, a non-zero
+# connection id, or dropped), in the stand-in's network namespace:
 #
-#   answers     bound to the interface address, as srcds binds it: healthy
-#   challenge   S2C_CHALLENGE first, the info reply only to a query carrying
-#               its bytes: healthy
-#   0.0.0.0     bound to every address and deaf to a query from 127.0.0.1,
-#               as Left 4 Dead 2 was in CI: healthy, asked at the
+#   ::          bound to every address of both families, as VEIN binds:
+#               healthy, and the stand-in saw one valid 512-byte request
+#   one address bound to the interface address: healthy
+#   noloop      bound to :: and deaf to 127.0.0.1: healthy, asked at the
 #               container's own address
+#   wrongid     a reply carrying another connection id: not an answer to
+#               this check, unhealthy
 #   silent      a socket on the port that never answers, on one address and
-#               on 0.0.0.0 (two to ask): unhealthy, and the check is over
-#               within 8 seconds, inside the 10 Docker gives it
+#               on :: (two to ask): unhealthy, and the check is over within
+#               8 seconds, inside the 10 Docker gives it
 #   no socket   nothing bound to the port, which is a process that stands
-#               without a network, as Black Mesa's did on Docker 29.4.2:
-#               unhealthy
+#               without a network: unhealthy
 #
-# The stand-in is not a server. The real one is the boot job in CI, which
-# also stops the game process and requires the check to go red.
+# The stand-in is not a server. The real one is the boot job in CI
+# (real-server.yml), which also stops the game process and requires the
+# check to go red.
 # shellcheck disable=SC2015   # pass and fail always exit 0, so "A && pass || fail" is if-then-else here
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -37,8 +40,8 @@ trap cleanup EXIT
 
 standin() {  # mode bind: a fresh stand-in, waited for until it is bound
   docker rm -f "$NET" >/dev/null 2>&1
-  docker run -d --name "$NET" -v "$PWD/tests/fixtures/fake-a2s.py:/fake-a2s.py:ro" "$PY" \
-    python3 -u /fake-a2s.py "$1" 27015 "$2" >/dev/null || return 1
+  docker run -d --name "$NET" -v "$PWD/tests/fixtures/fake-gns.py:/fake-gns.py:ro" "$PY" \
+    python3 -u /fake-gns.py "$1" 7777 "$2" >/dev/null || return 1
   for _ in $(seq 1 40); do
     docker logs "$NET" 2>&1 | grep -q '^bound' && return 0
     sleep 0.25
@@ -52,33 +55,39 @@ empty() {  # a namespace with nothing bound to the port
 check() {  # run the health check in the pinned image, in the stand-in's namespace: sets rc, out, secs
   out=$(docker run --rm --platform linux/amd64 --network "container:$NET" --entrypoint bash \
     -v "$PWD/tools/healthcheck.sh:/healthcheck.sh:ro" "$IMAGE" \
-    -c 's=$SECONDS; bash /healthcheck.sh 27015; rc=$?; echo "secs=$((SECONDS - s))"; exit $rc' 2>&1); rc=$?
+    -c 's=$SECONDS; bash /healthcheck.sh 7777; rc=$?; echo "secs=$((SECONDS - s))"; exit $rc' 2>&1); rc=$?
   secs=$(sed -n 's/^secs=//p' <<<"$out"); out=$(grep -v '^secs=' <<<"$out")
 }
 
 echo "=== the health check, in the pinned image, against a stand-in ==="
 echo
 
-standin answers iface || { fail "the stand-in never bound its port"; echo; echo "passed: $PASSED   failed: $FAILED"; exit 1; }
+standin answers :: || { fail "the stand-in never bound its port"; echo; echo "passed: $PASSED   failed: $FAILED"; exit 1; }
 check
-[ "$rc" = 0 ] && grep -q "^healthy:" <<<"$out" && pass "an answer on the interface address: healthy ($out)" || fail "answers: exit $rc, $out"
+[ "$rc" = 0 ] && grep -q "^healthy:" <<<"$out" && pass "bound to ::, as VEIN binds: healthy ($out)" || fail "answers on ::: exit $rc, $out"
+seen=$(docker logs "$NET" 2>&1 | grep '^seen ')
+[ "$seen" = "seen 512 True" ] && pass "the stand-in saw one request, 512 bytes, valid" || fail "the stand-in saw: ${seen:-nothing}"
 
-standin challenge iface || fail "the challenge stand-in never bound its port"
+standin answers iface || fail "the one-address stand-in never bound its port"
 check
-[ "$rc" = 0 ] && pass "a challenge first, then the answer: healthy" || fail "challenge: exit $rc, $out"
+[ "$rc" = 0 ] && pass "bound to the interface address: healthy" || fail "one address: exit $rc, $out"
 
-standin noloop 0.0.0.0 || fail "the 0.0.0.0 stand-in never bound its port"
+standin noloop :: || fail "the noloop stand-in never bound its port"
 check
-[ "$rc" = 0 ] && pass "bound to 0.0.0.0 and deaf to 127.0.0.1: healthy, asked at the container's address" || fail "0.0.0.0: exit $rc, $out"
+[ "$rc" = 0 ] && pass "bound to :: and deaf to 127.0.0.1: healthy, asked at the container's address" || fail "noloop: exit $rc, $out"
+
+standin wrongid :: || fail "the wrongid stand-in never bound its port"
+check
+[ "$rc" = 1 ] && [[ $out == *"no challenge reply"* ]] && pass "a reply with another connection id: not this check's answer, unhealthy" || fail "wrongid: exit $rc, $out"
 
 standin silent iface || fail "the silent stand-in never bound its port"
 check
-[ "$rc" = 1 ] && [[ $out == *"no A2S_INFO reply"* ]] && pass "a socket that never answers: unhealthy" || fail "silent: exit $rc, $out"
+[ "$rc" = 1 ] && [[ $out == *"no challenge reply"* ]] && pass "a socket that never answers: unhealthy" || fail "silent: exit $rc, $out"
 [ -n "$secs" ] && [ "$secs" -le 8 ] && pass "and the check was over in ${secs}s, inside Docker's 10" || fail "silent: the check took ${secs:-?}s"
 
-standin silent 0.0.0.0 || fail "the silent 0.0.0.0 stand-in never bound its port"
+standin silent :: || fail "the silent :: stand-in never bound its port"
 check
-[ "$rc" = 1 ] && [ -n "$secs" ] && [ "$secs" -le 8 ] && pass "silent on 0.0.0.0, two addresses asked: unhealthy in ${secs}s" || fail "silent 0.0.0.0: exit $rc in ${secs:-?}s, $out"
+[ "$rc" = 1 ] && [ -n "$secs" ] && [ "$secs" -le 8 ] && pass "silent on ::, two addresses asked: unhealthy in ${secs}s" || fail "silent ::: exit $rc in ${secs:-?}s, $out"
 
 empty
 check

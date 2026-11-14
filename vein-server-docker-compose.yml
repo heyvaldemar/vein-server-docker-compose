@@ -45,8 +45,10 @@ services:
       # the host to 7777 in the container and Steam lists a port nobody can
       # reach. Change a port by changing the variable, which moves both sides.
       - "${VEIN_SERVER_PORT:-7777}:${VEIN_SERVER_PORT:-7777}/udp"
-      # The query port: the server browser, and how scripts/refresh.sh asks
-      # how many players are on.
+      # The query port: the server browser, and how scripts/refresh.sh asks a
+      # public server how many players are on. VEIN answers it only as a
+      # public server (VEIN_SERVER_PUBLIC=true); private, it is bound and
+      # silent, so the health check asks the game port instead.
       - "${VEIN_SERVER_QUERY_PORT:-27015}:${VEIN_SERVER_QUERY_PORT:-27015}/udp"
     environment:
       SERVER_NAME: ${VEIN_SERVER_NAME:-VEIN Server}
@@ -71,9 +73,6 @@ services:
       AUTOSAVE_ENABLED: "1"
       AUTOSAVE_INTERVAL: "60"
       AUTOSAVE_MAX_QUANTITY: "10"
-      # Optional: a Steam game server login token claims the server for your
-      # account. Steam app 1857950, per the image's documentation.
-      STEAM_GSLT: ${VEIN_SERVER_STEAM_GSLT:-}
       TZ: ${VEIN_SERVER_TIMEZONE:-UTC}
     volumes:
       # The whole install: about 10 GB of game files SteamCMD manages and can
@@ -81,19 +80,24 @@ services:
       # and its settings. scripts/backup.sh archives only Vein/Saved, and
       # scripts/restore.sh puts it back at exactly that path.
       - vein-server-data:/home/steam/vein
-      # The health check: A2S_INFO to the query port (see healthcheck: below).
+      # The health check: a SteamNetworkingSockets challenge to the game port
+      # (see healthcheck: below).
       - ./tools/healthcheck.sh:/healthcheck.sh:ro
     healthcheck:
-      # THE GAME'S OWN ANSWER, NOT ITS PROCESS. tools/healthcheck.sh sends
-      # A2S_INFO, the Steam query every server browser sends, to the query port
-      # and is healthy only on the server's reply. Up to v1.0.3 this looked for
-      # VeinServer in /proc, which a hung or stopped server keeps; CI stops it
-      # with SIGSTOP and requires red. Not the log either: an empty server
-      # writes nothing. While SteamCMD downloads the game nothing is bound to
-      # the query port, so the check is red then, as it must be. Each check
-      # ends within 7 seconds. It asks from inside the container: it does not
-      # prove the ports are published on the host or open in a firewall.
-      test: ["CMD", "bash", "/healthcheck.sh", "${VEIN_SERVER_QUERY_PORT:-27015}"]
+      # THE GAME'S OWN ANSWER, NOT ITS PROCESS. tools/healthcheck.sh sends the
+      # first packet a client sends, a SteamNetworkingSockets ChallengeRequest,
+      # to the game port and is healthy only on the server's reply carrying
+      # back the check's own connection id. A private server, the default,
+      # never answers A2S, so a check on the query port would be red forever.
+      # Up to v1.0.3 this looked for VeinServer in /proc, which a hung or
+      # stopped server keeps; CI stops it with SIGSTOP and requires red. Not
+      # the log either: an empty server writes nothing. While SteamCMD
+      # downloads the game nothing is bound to the game port, so the check is
+      # red then, as it must be. Each check ends within 7 seconds and opens no
+      # connection (CI asks thirty times and requires no new log line and no
+      # file written). It asks from inside the container: it does not prove
+      # the ports are published on the host or open in a firewall.
+      test: ["CMD", "bash", "/healthcheck.sh", "${VEIN_SERVER_PORT:-7777}"]
       interval: 30s
       timeout: 10s
       retries: 3
