@@ -45,25 +45,26 @@ services:
       MODE: ${MODE:-unset}
       BUILD: ${BUILD:-0}
       LOG: ${LOG:-}
-      TRAFFIC: ${TRAFFIC:-}
+      SELF: ${SELF:-}
     command:
       - python3
       - -c
       - |
         import os, socket, struct, threading, time
         mode, build = os.environ["MODE"], os.environ["BUILD"]
-        # The game port, bound as the game binds it. With TRAFFIC set, a
-        # "player" in the same namespace sends to it ten times a second.
+        # The game port, bound as the game binds it. With SELF set, the
+        # server's own health check: packets to 127.0.0.1 from inside, twice
+        # a second, which must not count as a player.
         g = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         g.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
         g.bind(("::", 7777))
-        def player():
+        def selfcheck():
             c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             while True:
-                c.sendto(b"\x00" * 64, ("127.0.0.1", 7777))
-                time.sleep(0.1)
-        if os.environ["TRAFFIC"]:
-            threading.Thread(target=player, daemon=True).start()
+                c.sendto(b"\x20" + b"\x00" * 511, ("127.0.0.1", 7777))
+                time.sleep(0.5)
+        if os.environ["SELF"]:
+            threading.Thread(target=selfcheck, daemon=True).start()
         os.makedirs("/home/steam/vein/steamapps", exist_ok=True)
         open("/home/steam/vein/steamapps/appmanifest_2131400.acf", "w").write(
             '"AppState"\n{\n\t"appid"\t\t"2131400"\n\t"buildid"\t\t"%s"\n}\n' % build)
@@ -85,10 +86,32 @@ services:
                 continue
             body = b"I\x11" + b"Fixture\x00map\x00vein\x00VEIN\x00" + struct.pack("<H", 0) + bytes([players, 16, 0]) + b"dl\x00\x00"
             s.sendto(b"\xff\xff\xff\xff" + body, a)
+  # A player, from outside the server's network namespace, the way one
+  # arrives: sends to the game port ten times a second when TRAFFIC is set.
+  player:
+    image: python:3.13-alpine
+    environment:
+      TRAFFIC: ${TRAFFIC:-}
+    command:
+      - python3
+      - -c
+      - |
+        import os, socket, time
+        if not os.environ["TRAFFIC"]:
+            time.sleep(100000)
+        c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        while True:
+            try:
+                c.sendto(b"\x00" * 64, ("vein-server", 7777))
+            except OSError:
+                pass
+            time.sleep(0.1)
 YAML
 
-# start MODE BUILD [LOG [TRAFFIC]]: a stand-in of its own per case; LOG is
-# Vein.log's lines joined by "|", TRAFFIC non-empty sends to the game port.
+# start MODE BUILD [LOG [TRAFFIC [SELF]]]: a stand-in of its own per case; LOG
+# is Vein.log's lines joined by "|", TRAFFIC non-empty has a player send to the
+# game port from outside, SELF non-empty has the server's own health check
+# send to it from inside.
 # Sets $p rather than printing it, so the project reaches PROJECTS and the
 # cleanup. The previous case's stand-in goes first: each case makes its own
 # network, and a host runs out of address pools long before it runs out of
@@ -97,7 +120,7 @@ start() {
   [ -n "${p:-}" ] && docker compose -p "$p" -f "$WORK/fixture.yml" down -t 1 >/dev/null 2>&1
   p="vein-refresh-$$-${#PROJECTS[@]}"
   PROJECTS+=("$p")
-  MODE="$1" BUILD="$2" LOG="${3:-}" TRAFFIC="${4:-}" docker compose -p "$p" -f "$WORK/fixture.yml" up -d >"$WORK/up.log" 2>&1 || { echo "cannot start the stand-in:"; cat "$WORK/up.log"; exit 1; }
+  MODE="$1" BUILD="$2" LOG="${3:-}" TRAFFIC="${4:-}" SELF="${5:-}" docker compose -p "$p" -f "$WORK/fixture.yml" up -d >"$WORK/up.log" 2>&1 || { echo "cannot start the stand-in:"; cat "$WORK/up.log"; exit 1; }
   # 27015 is 0x6987 in /proc/net/udp. Ready means listening and the manifest
   # written; the stand-in answers nothing until it is asked.
   for _ in $(seq 1 40); do
@@ -226,6 +249,12 @@ export VEIN_TRAFFIC_SECONDS=3
 start silent 100 "$S1|$S2"
 out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
 if [ "$rc" = 0 ] && grep -q "no packet reached the game port in 3s: nobody is on" <<<"$out" && grep -q "would restart to update (100 -> 101): players online: 0" <<<"$out"; then pass "private, nobody joined, no traffic: nobody on, it would restart"; else fail "private, nobody joined, no traffic: exit $rc, said: $out"; fi
+
+# The same idle server, its own health check asking from inside the whole
+# time: those packets are on the loopback interface and are not a player.
+start silent 100 "$S1|$S2" "" self
+out="$(VEIN_REMOTE_BUILD=101 refresh --dry-run 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && grep -q "no packet reached the game port in 3s: nobody is on" <<<"$out"; then pass "private, nobody joined, only its own health check on the port: nobody on, it would restart"; else fail "private, its own health check on the port: exit $rc, said: $out"; fi
 
 # 15. The same server with someone sending to its game port: the log shows no
 # join, but somebody is talking to the server. Unknown, not zero: wait, exit 1.

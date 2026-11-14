@@ -193,13 +193,15 @@ jobs:
       - name: The refresh, on the real private server - nobody on
         # A private server never answers A2S, so with nobody joined since the
         # start the log alone cannot say the server is empty; the game port's
-        # traffic is the second witness (scripts/refresh.sh). Steam's build is
+        # traffic is the second witness (scripts/refresh.sh), and the server's
+        # own health check, asking every 30 seconds from inside, must not
+        # count as a player (it did in run 43541241737). Steam's build is
         # given as one past the installed one, so the refresh has a reason to
         # decide, and --dry-run keeps it from restarting.
         run: |
           cid="$($COMPOSE ps -q vein-server)"
           b="$(docker exec "$cid" sh -c "grep -oE '\"buildid\"[[:space:]]+\"[0-9]+\"' /home/steam/vein/steamapps/appmanifest_2131400.acf | grep -oE '[0-9]+' | head -1")"
-          out="$(VEIN_REMOTE_BUILD=$((b + 1)) scripts/refresh.sh --dry-run 2>&1)"; rc=$?
+          rc=0; out="$(VEIN_REMOTE_BUILD=$((b + 1)) scripts/refresh.sh --dry-run 2>&1)" || rc=$?
           echo "$out" | sed -E 's/7656[0-9]{13}/<steamid>/g'
           if [ "$rc" != 0 ] || ! grep -q "would restart to update ($b -> $((b + 1))): players online: 0" <<<"$out"; then
             echo "::error::the refresh did not read the idle private server as empty"; exit 1

@@ -189,7 +189,11 @@ case "$a2s" in ''|*[!0-9]*) a2s="?" ;; esac
 # The game port's traffic, asked only when the log shows no join and Steam
 # gave no answer: the packets that reach the port in TSECS seconds, counted
 # from a raw socket in the server's network namespace (NET_RAW and nothing
-# else). Our own packets going out are not counted. "?" when it cannot be read.
+# else). Packets going out are not counted, and neither is anything on the
+# loopback interface: that is the server's own health check, which asks from
+# inside the container every 30 seconds (run 43541241737 read it as a player).
+# A player arrives on the container's network interface. "?" when it cannot
+# be read.
 traffic=""
 if [ "$from_log" != "?" ] && [ "$joins_seen" = 0 ] && [ "$a2s" = "?" ]; then
   traffic="$(PORT="$GPORT" SECS="$TSECS" docker run --rm --network "container:$cid" --cap-drop ALL --cap-add NET_RAW \
@@ -203,7 +207,7 @@ while time.monotonic() < end:
         d, a = s.recvfrom(65535)
     except socket.timeout:
         continue
-    if a[2] == socket.PACKET_OUTGOING or len(d) < 14:
+    if a[0] == "lo" or a[2] == socket.PACKET_OUTGOING or len(d) < 14:
         continue
     t = struct.unpack("!H", d[12:14])[0]
     if t == 0x0800 and len(d) >= 34 and d[23] == 17:
