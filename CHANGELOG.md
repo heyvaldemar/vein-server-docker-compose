@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.1.0] - 2026-11-14
+
 ### Fixed
 
 - **An idle private server updates itself again.** VEIN answers the Steam (A2S) query only as a public server; private, the template's default, it never answers (measured in CI). `scripts/refresh.sh` read a private server whose log showed no join since its start as "nobody can say who is on" and never restarted it to update. With no join in the log and no Steam answer, it now watches the game port for 10 seconds from a helper in the server's network namespace (`NET_RAW` only): no packet at all is nobody on, and the server's own health check, on the loopback interface, does not count; any traffic is someone who may have joined in a shape the parser does not know, and it waits as before. `tests/e2e-refresh.sh` cases 14 to 16; the released script fails case 14, and CI runs the refresh against the real idle private server.
@@ -22,7 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **The Steam game server login token.** `VEIN_SERVER_STEAM_GSLT` is gone from the compose file and `.env.example`: VEIN does not read one. The image hands it to the server as `+sv_setsteamaccount`, a Source-engine setting; the VEIN binary has no such string, and with a token on its command line the server still logged on to Steam as an anonymous game server (measured in CI). The image's start line printed the token in clear in `docker compose logs`; without one there is nothing to print. If you set it and ever posted those logs, revoke that token on Steam's game server account page.
-
 ## [1.0.3] - 2026-11-02
 
 ### Fixed
@@ -57,7 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scripts/backup.sh` and `scripts/restore.sh`**: the world (`Vein/Saved`) archived without the game files, written as `.partial` until the archive is shown to hold save files; restored at the exact path the server reads, with the previous world moved aside and every save file checked at its live path. `tests/e2e-backup-restore.sh` proves it by path and by byte, and shows that the same archive extracted at the volume's root leaves no world where the server looks.
 - **`update.sh`**: moves between release tags, refuses to cross a major version unattended, refuses to run over local changes, names any new required variable before anything has moved.
 
-[Unreleased]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.0...v1.0.1
