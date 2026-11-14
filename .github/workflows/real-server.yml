@@ -262,6 +262,26 @@ jobs:
       - name: The probe sees what it looks for - a canary in a log and on two command lines
         run: tests/secret-probe.sh selftest
 
+      - name: A stop - timed, its exit code, and what was written on the way out (tests/clean-stop.sh)
+        # The compose file relies on the image's SAVE_ON_SHUTDOWN for the
+        # world. Measured here: the seconds from docker compose stop to the
+        # container's end, the exit code, whether Docker had to SIGKILL, the
+        # server's last words, and the newest file under Saved/SaveGames
+        # before and after (VEIN writes none until somebody has played, so a
+        # CI server may have none to save).
+        env:
+          CLEAN_STOP_PROJECT: vein
+          CLEAN_STOP_COMPOSE: vein-server-docker-compose.yml
+        run: |
+          cid="$($COMPOSE ps -q vein-server)"
+          newest() { docker run --rm -v vein-server-data:/d:ro alpine:3.20 sh -c 'find /d/Vein/Saved/SaveGames -type f -exec stat -c "%Y %n" {} + 2>/dev/null | sort -n | tail -1' | sed 's#/d/##'; }
+          before="$(newest)"
+          since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          tests/clean-stop.sh vein-server -
+          echo "newest save before the stop: ${before:-none}; after: $(newest || true)"
+          echo "the server's last words:"
+          docker logs --since "$since" "$cid" 2>&1 | grep -a -i -E 'sav|shut|exit|stop|quit|kill|world|signal' | tail -25 | sed -E 's/7656[0-9]{13}/<steamid>/g; s/([0-9]{1,3}[.]){3}[0-9]{1,3}/<ip>/g' | cut -c1-200
+
       - name: Stop
         if: always()
         run: |

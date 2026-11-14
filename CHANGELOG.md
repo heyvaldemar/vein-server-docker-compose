@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Added
+
+- **A stop is measured on the real server.** `tests/clean-stop.sh` in Real Server times `docker compose stop` and prints what the server wrote on its way out: 12 seconds of the two-minute grace period, exit 143, no SIGKILL from Docker; the image says "Waiting 10s for save to complete" and the engine exits through its own shutdown ([run 43621251003](https://github.com/heyvaldemar/vein-server-docker-compose/actions/runs/43621251003)). A CI server has no world to save (VEIN writes none until somebody has played), so whether the save happens is not proven here.
 
 ## [1.2.0] - 2026-11-14
 
