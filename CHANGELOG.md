@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Fixed
+
+- **The secret probe no longer counts a place of blank lines as read.** `collect()` checked that each place (compose logs, command lines, the host's `ps`) was not empty with `-s`, which a file of nothing but line ends passes: a process with an empty command line still ends its line. It now needs one line with something in it, or the probe fails, naming the place. CI only; nothing a deployment runs changes.
 
 ## [1.2.1] - 2026-11-22
 
