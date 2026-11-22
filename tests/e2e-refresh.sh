@@ -70,7 +70,9 @@ services:
             '"AppState"\n{\n\t"appid"\t\t"2131400"\n\t"buildid"\t\t"%s"\n}\n' % build)
         if os.environ["LOG"]:
             os.makedirs("/home/steam/vein/Vein/Saved/Logs", exist_ok=True)
-            open("/home/steam/vein/Vein/Saved/Logs/Vein.log", "w").write(os.environ["LOG"].replace("|", "\n") + "\n")
+            # "\033" in a line becomes the escape character itself: colour
+            # codes, written the way a terminal gets them.
+            open("/home/steam/vein/Vein/Saved/Logs/Vein.log", "w").write(os.environ["LOG"].replace("|", "\n").replace("\\033", "\x1b") + "\n")
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.bind(("0.0.0.0", 27015))
         n = 0
@@ -212,6 +214,24 @@ start players:0 100 "$L1|$J1|$L2|$J2|$G2"; before="$(started "$p")"
 out="$(VEIN_REMOTE_BUILD=101 refresh 2>&1)"; rc=$?
 if [ "$rc" = 0 ] && grep -q "but 1 player(s) are on" <<<"$out"; then pass "Steam says 0, the log has one player on: waits"; else fail "Steam says 0, the log has one player on: exit $rc, said: $out"; fi
 if [ "$(started "$p")" = "$before" ]; then pass "Steam says 0, the log has one player on: not restarted"; else fail "Steam says 0, the log has one player on: restarted"; fi
+
+# 10a. COLOUR CODES BETWEEN THE WORDS, on a private server with a quiet port.
+# One player joined and never left; the log's lines carry escape sequences,
+# one of them between "Join" and "succeeded". Read through them: one on, so
+# it waits. A parser looking for the words finds no join in this log, and
+# with no Steam answer and no traffic it would call the server empty and
+# restart it under that player: the raw log is checked for exactly that, so
+# this case is shown to catch it.
+C1='[2026.10.19-22.01.10:100][  0]\033[36mLogNet:\033[0m'"${L1#*LogNet:}"
+C2='[2026.10.19-22.01.12:200][  0]\033[36mLogNet:\033[0m \033[32mJoin\033[0m'"${J1#*Join}"
+export VEIN_TRAFFIC_SECONDS=3
+start silent 100 "$C1|$C2"; before="$(started "$p")"
+out="$(VEIN_REMOTE_BUILD=101 refresh 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && grep -q "but 1 player(s) are on" <<<"$out"; then pass "private, quiet port, colour codes in the log: one player read through them, waits"; else fail "colour codes in the log: exit $rc, said: $out"; fi
+if [ "$(started "$p")" = "$before" ]; then pass "colour codes in the log: not restarted"; else fail "colour codes in the log: restarted"; fi
+raw="$(docker compose -p "$p" -f "$WORK/fixture.yml" exec -T vein-server grep -c 'Join succeeded:' /home/steam/vein/Vein/Saved/Logs/Vein.log 2>/dev/null)"
+if [ "${raw:-x}" = 0 ]; then pass "the raw log has no \"Join succeeded:\" a parser without the clean-up could find (this case catches it)"; else fail "the raw log has ${raw:-no readable count of} \"Join succeeded:\" lines, so this case does not show what it guards against"; fi
+unset VEIN_TRAFFIC_SECONDS
 
 # 11. A log with no joins at all, while Steam's answer says two are on, is a
 # log this script cannot read, not an empty server. Phantoms come only after

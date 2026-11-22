@@ -132,6 +132,14 @@ fi
 # log's format. The log is copied first, and a copy from an exec that did not
 # end with 0 is not counted: the Steam answer, which can only count too many,
 # decides alone.
+#
+# COLOUR CODES COME OUT BEFORE THE LINES ARE READ. Some game servers colour
+# what they print, and the escape sequence lands between the words:
+# "Join<ESC>[0m succeeded" is no join to a parser looking for the words, and
+# a log with no join, on a private server with a quiet port, reads as nobody
+# on. VEIN's lines on a live server carry none; a game update that adds them
+# must not turn a player into a restart. And a count the parser did not print is
+# no count: both numbers come from one line, or the log is not counted.
 from_log="?"; joins_seen=0
 LOGCOPY=""
 trap '[ -z "$LOGCOPY" ] || rm -f "$LOGCOPY"' EXIT
@@ -140,8 +148,10 @@ if docker exec "$cid" test -r "$LOG" 2>/dev/null; then
   if docker exec "$cid" cat "$LOG" >"$LOGCOPY" 2>/dev/null; then
     from_log="$(docker run --rm -i python:3.13-alpine python3 -c '
 import re, sys
+ansi = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 names, on, seen = {}, set(), 0
 for raw in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
+    raw = ansi.sub("", raw)
     m = re.search(r"Login request: \?Name=([^?]+)\?\?ID=(\d+)", raw)
     if m:
         names[m.group(2)] = m.group(1)
@@ -157,8 +167,8 @@ for raw in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
 print(len(on), seen)
 ' <"$LOGCOPY" 2>/dev/null || echo "?")"
     joins_seen="${from_log#* }"; from_log="${from_log%% *}"
+    case "$joins_seen" in ''|*[!0-9]*) from_log="?"; joins_seen=0 ;; esac
     case "$from_log" in ''|*[!0-9]*) from_log="?" ;; esac
-    case "$joins_seen" in ''|*[!0-9]*) joins_seen=0 ;; esac
   else
     say "the server's log could not be read whole (docker exec ended with $?), so the count goes by its Steam answer alone"
   fi

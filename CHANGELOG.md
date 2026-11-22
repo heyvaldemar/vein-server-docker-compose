@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.2.1] - 2026-11-22
+
+### Fixed
+
+- **The secret probe no longer fails when a process ends while it reads the container.** `tests/secret-probe.sh` read each process's command line in a loop that ended on the status of its last test, so a short-lived process last in glob order and gone by the read failed the whole container as unreadable, while an unreadable process anywhere else passed. Now a process gone by the read is not counted, every process still there must be read, and a container that cannot be entered or has nothing to read still fails. Found on the HumanitZ template, where it turned a digest refresh red; against a container starting processes in a loop the old loop failed 170 of 200 reads there and the new one none ([heyvaldemar/humanitz-server-docker-compose#3](https://github.com/heyvaldemar/humanitz-server-docker-compose/pull/3)). CI only; nothing a deployment runs changes.
+- **Colour codes in the server's log no longer hide a join.** `scripts/refresh.sh` counts who is on from `Vein.log`, and some game servers colour what they print: an escape sequence between "Join" and "succeeded" is no join to a parser looking for the words, and on a private server with a quiet game port a log with no join reads as nobody on, so an update would restart the server under that player. VEIN's lines on a live server carry none; the parser now takes colour codes out of every line before reading it, so a game update that adds them changes nothing. And the two numbers the parser prints come from one line or the log is not counted: a missing join count no longer stands in as 0. `tests/e2e-refresh.sh` adds a log with colour codes around and between the words, one player joined and never left, no Steam answer and no traffic: read as one on, it waits, and the raw log is checked to hold no "Join succeeded:" a parser without the clean-up could find, so the case is shown to catch it. On the code before this change, that case read "nobody is on" and restarted the stand-in under its player. A log in a shape the parser does not know was already "?", never 0 (cases 11, 12 and 16).
+
 ### Added
 
 - **A stop is measured on the real server.** `tests/clean-stop.sh` in Real Server times `docker compose stop` and prints what the server wrote on its way out: 12 seconds of the two-minute grace period, exit 143, no SIGKILL from Docker; the image says "Waiting 10s for save to complete" and the engine exits through its own shutdown ([run 43621251003](https://github.com/heyvaldemar/vein-server-docker-compose/actions/runs/43621251003)). A CI server has no world to save (VEIN writes none until somebody has played), so whether the save happens is not proven here.
@@ -80,7 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scripts/backup.sh` and `scripts/restore.sh`**: the world (`Vein/Saved`) archived without the game files, written as `.partial` until the archive is shown to hold save files; restored at the exact path the server reads, with the previous world moved aside and every save file checked at its live path. `tests/e2e-backup-restore.sh` proves it by path and by byte, and shows that the same archive extracted at the volume's root leaves no world where the server looks.
 - **`update.sh`**: moves between release tags, refuses to cross a major version unattended, refuses to run over local changes, names any new required variable before anything has moved.
 
-[Unreleased]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/heyvaldemar/vein-server-docker-compose/compare/v1.0.2...v1.0.3
